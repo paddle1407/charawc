@@ -364,8 +364,10 @@ setup(void)
 	setenv("WAYLAND_DISPLAY", socket, 1);
 	_inf("WAYLAND_DISPLAY=%s", socket);
 
+	/* Degraded, not broken: key bindings dispatch without the socket. */
 	if (!chara_ipc_init(wm.loop))
-		_err(1, "couldn't create the control socket");
+		_wrn("continuing without a control socket: charactl cannot reach "
+		     "this session");
 	if (!chara_startup_init(wm.loop))
 		_err(1, "couldn't set up startup commands");
 
