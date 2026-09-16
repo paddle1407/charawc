@@ -929,6 +929,30 @@ static int draw_text(cairo_t *cr, PangoLayout *layout, const char *text,
 	return draw_text_within(cr, layout, text, x, color, 0, draw);
 }
 
+/* Protocol strings are bytes: repair the encoding and cut on a character
+ * boundary, so that later UTF-8 walks cannot run off the end. */
+static void store_utf8(char *out, size_t size, const char *text)
+{
+	char *repaired = NULL;
+	const char *source = text ? text : "", *p;
+	size_t length;
+
+	if (!size)
+		return;
+	if (!g_utf8_validate(source, -1, NULL))
+		source = repaired = g_utf8_make_valid(source, -1);
+	for (p = source; *p;) {
+		const char *next = g_utf8_next_char(p);
+		if ((size_t)(next - source) >= size)
+			break;
+		p = next;
+	}
+	length = (size_t)(p - source);
+	memcpy(out, source, length);
+	out[length] = '\0';
+	g_free(repaired);
+}
+
 static void limited_text(char *out, size_t out_size, const char *text,
 		unsigned max_length)
 {
@@ -1644,7 +1668,7 @@ static void workspace_name(void *data, struct ext_workspace_handle_v1 *proxy,
 {
 	struct workspace *workspace = data;
 	(void)proxy;
-	snprintf(workspace->name, sizeof(workspace->name), "%s", name);
+	store_utf8(workspace->name, sizeof(workspace->name), name);
 }
 
 static void workspace_coordinates(void *data,
@@ -1839,7 +1863,7 @@ static void toplevel_title(void *data,
 {
 	struct toplevel *toplevel = data;
 	(void)proxy;
-	snprintf(toplevel->title, sizeof(toplevel->title), "%s", title);
+	store_utf8(toplevel->title, sizeof(toplevel->title), title);
 }
 
 static void toplevel_app_id(void *data,
@@ -1847,7 +1871,7 @@ static void toplevel_app_id(void *data,
 {
 	struct toplevel *toplevel = data;
 	(void)proxy;
-	snprintf(toplevel->app_id, sizeof(toplevel->app_id), "%s", app_id);
+	store_utf8(toplevel->app_id, sizeof(toplevel->app_id), app_id);
 }
 
 /*
