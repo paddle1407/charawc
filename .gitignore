@@ -4,12 +4,8 @@
 # Scratch / experiments
 /temp/
 
-# Vendored subprojects — each lives in its own repository.
-# They are clones with their own .git, so git would refuse to track them
-# as plain directories anyway.
-/src/libspng/
-/src/neuswc/
-/src/neuwld/
+# src/libspng, src/neuswc and src/neuwld are git submodules — tracked as
+# pinned commits, not files. Their own .gitignore handles their build output.
 
 # Generated wayland-scanner sources
 /src/charabar/build/

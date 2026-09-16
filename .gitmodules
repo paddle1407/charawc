@@ -1,0 +1,9 @@
+[submodule "src/neuswc"]
+	path = src/neuswc
+	url = https://github.com/paddle1407/neuswc.git
+[submodule "src/neuwld"]
+	path = src/neuwld
+	url = https://github.com/paddle1407/neuwld.git
+[submodule "src/libspng"]
+	path = src/libspng
+	url = https://github.com/randy408/libspng.git

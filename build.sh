@@ -12,6 +12,13 @@ SRC="$ROOT/src"
 
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 
+for sub in libspng neuswc neuwld; do
+	[ -e "$SRC/$sub/meson.build" ] && continue
+	echo "error: src/$sub is empty -- the subprojects are git submodules." >&2
+	echo "       run: git submodule update --init --recursive" >&2
+	exit 1
+done
+
 [ "$1" = clean ] && rm -rf "$SRC"/neuwld/build "$SRC"/libspng/build \
 	"$SRC"/neuswc/build "$SRC"/charabar/build
 
