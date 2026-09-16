@@ -1,6 +1,5 @@
 #include <errno.h>
 #include <fcntl.h>
-#include <spng.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +7,26 @@
 #include <unistd.h>
 
 #include "config.h"
+
+#ifdef CHARA_NO_PNG
+
+/* Built without libspng. Report success so that a config.lua carrying a
+ * wallpaper path still loads: the path is ignored and swc falls back to the
+ * solid appearance.wallpaper.background. Failing here would abort the whole
+ * configuration, and run.sh checks the configuration before switching VTs,
+ * so it would leave the session refusing to start over a decorative setting. */
+bool
+chara_wallpaper_load(struct wallpaper *wallpaper, const char *path)
+{
+	(void)wallpaper;
+	_wrn("wallpaper: built without PNG support, ignoring %s; "
+	     "using appearance.wallpaper.background", path);
+	return true;
+}
+
+#else
+
+#include <spng.h>
 
 bool
 chara_wallpaper_load(struct wallpaper *wallpaper, const char *path)
@@ -77,3 +96,5 @@ done:
 	fclose(fp);
 	return ok;
 }
+
+#endif /* CHARA_NO_PNG */

@@ -14,6 +14,7 @@
 /src/charabar/charabar
 /src/charawc/charawc
 /src/charawc/charactl
+/src/charawc/.png-*
 
 # Compiler leftovers
 *.o
