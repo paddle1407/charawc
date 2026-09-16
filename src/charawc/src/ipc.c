@@ -476,8 +476,12 @@ chara_ipc_init(struct wl_event_loop *loop)
 		_wrn("ipc: %s", strerror(errno));
 		return false;
 	}
-	if (bind(listen_fd, (struct sockaddr *)&address, sizeof(address)) < 0 ||
-	    listen(listen_fd, 16) < 0) {
+	/* bind() applies the umask, so narrow it rather than widening the socket
+	 * and fixing the mode afterwards. */
+	mode_t saved = umask(0177);
+	int bound = bind(listen_fd, (struct sockaddr *)&address, sizeof(address));
+	umask(saved);
+	if (bound < 0 || listen(listen_fd, 16) < 0) {
 		_wrn("ipc: %s: %s", path, strerror(errno));
 		close(listen_fd);
 		listen_fd = -1;
