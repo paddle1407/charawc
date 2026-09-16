@@ -3,16 +3,33 @@
 #
 #   ./build.sh          incremental
 #   ./build.sh clean    wipe the build directories first
+#   PNG=0 ./build.sh    no libspng; wallpapers fall back to a solid colour
 
 set -e
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
 PREFIX="$ROOT/prefix"
 SRC="$ROOT/src"
+PNG=${PNG:-1}
 
-export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+# Keep the caller's search path so that "is spng already installed?" asks about
+# the system rather than about a copy an earlier run left in ./prefix.
+SYSTEM_PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${SYSTEM_PKG_CONFIG_PATH:+:$SYSTEM_PKG_CONFIG_PATH}"
 
-for sub in libspng neuswc neuwld; do
+# libspng is bundled only as a fallback: skip it entirely without PNG support,
+# and prefer a distribution package when there is one.
+SPNG=bundled
+if [ "$PNG" = 0 ]; then
+	SPNG=disabled
+elif PKG_CONFIG_PATH=$SYSTEM_PKG_CONFIG_PATH pkg-config --exists spng 2>/dev/null; then
+	SPNG=system
+fi
+
+REQUIRED="neuswc neuwld"
+[ "$SPNG" = bundled ] && REQUIRED="libspng $REQUIRED"
+
+for sub in $REQUIRED; do
 	[ -e "$SRC/$sub/meson.build" ] && continue
 	echo "error: src/$sub is empty -- the subprojects are git submodules." >&2
 	echo "       run: git submodule update --init --recursive" >&2
@@ -32,10 +49,16 @@ meson_configure() {
 	fi
 }
 
-step libspng
-cd "$SRC/libspng"
-meson_configure
-meson install -C build >/dev/null
+case $SPNG in
+system)   printf '\n==> libspng: using the version installed on this system\n' ;;
+disabled) printf '\n==> libspng: skipped (PNG=0, wallpaper images unavailable)\n' ;;
+bundled)
+	step libspng
+	cd "$SRC/libspng"
+	meson_configure
+	meson install -C build >/dev/null
+	;;
+esac
 
 step neuwld
 cd "$SRC/neuwld"
@@ -51,7 +74,7 @@ meson install -C build >/dev/null
 
 step charawc
 cd "$SRC/charawc"
-make EXTRA_CPPFLAGS="-I$PREFIX/include" \
+make PNG="$PNG" EXTRA_CPPFLAGS="-I$PREFIX/include" \
      EXTRA_LDFLAGS="-Wl,-rpath,$PREFIX/lib" >/dev/null
 
 step charabar
