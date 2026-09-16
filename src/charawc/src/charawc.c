@@ -283,8 +283,11 @@ reload_now(void *data)
 		chara_startup_command_free(c);
 	}
 
-	struct config previous = config;
-	config = next;
+	/* Not "previous = config; config = next": struct config carries wl_list
+	 * heads, which are relocated rather than copied. */
+	struct config previous;
+	chara_config_move(&previous, &config);
+	chara_config_move(&config, &next);
 	chara_config_finish(&previous);
 
 	load_cursor_theme();
@@ -375,24 +378,34 @@ setup(void)
 static void
 usage(FILE *out, const char *name)
 {
-	fprintf(out, "usage: %s [-c config.lua] [-C] [-h]\n"
+	fprintf(out, "usage: %s [-c config.lua] [-C] [-W] [-h]\n"
 	             "  -c  configuration file (default ~/.config/charawc/config.lua)\n"
-	             "  -C  check the configuration and exit\n", name);
+	             "  -C  check the configuration and exit\n"
+	             "  -W, --write-config  write the starter configuration if there\n"
+	             "      is none, then exit; an existing file is left alone\n", name);
 }
 
 int
 main(int argc, char **argv)
 {
-	bool check_only = false;
+	static const struct option long_options[] = {
+		{ "write-config", no_argument, NULL, 'W' },
+		{ "help", no_argument, NULL, 'h' },
+		{ NULL, 0, NULL, 0 },
+	};
+	bool check_only = false, write_only = false;
 	int option;
 
-	while ((option = getopt(argc, argv, "c:Ch")) != -1) {
+	while ((option = getopt_long(argc, argv, "c:ChW", long_options, NULL)) != -1) {
 		switch (option) {
 		case 'c':
 			config_path = strdup(optarg);
 			break;
 		case 'C':
 			check_only = true;
+			break;
+		case 'W':
+			write_only = true;
 			break;
 		case 'h':
 			usage(stdout, argv[0]);
@@ -405,12 +418,56 @@ main(int argc, char **argv)
 	if (!config_path)
 		config_path = chara_config_path("config.lua");
 
+	if (write_only) {
+		if (!config_path)
+			_err(1, "couldn't work out where the configuration lives; "
+			        "set HOME or XDG_CONFIG_HOME");
+		if (chara_config_write_example(config_path)) {
+			printf("wrote a starter configuration to %s\n", config_path);
+			return 0;
+		}
+		if (errno == EEXIST) {
+			printf("%s already exists; left alone\n", config_path);
+			return 0;
+		}
+		fprintf(stderr, "charawc: couldn't write %s: %s\n", config_path,
+		        strerror(errno));
+		return 1;
+	}
+
 	if (!chara_config_init(&config))
 		_err(1, "out of memory");
+
+	/* A first run should leave a file behind to edit, not invisible defaults.
+	 * Checking a configuration must not create one, though: absence is not a
+	 * failure, so -C reports it and succeeds rather than holding up a login. */
+	if (!config_path) {
+		_wrn("couldn't work out where the configuration lives; "
+		     "using built-in defaults");
+	} else if (access(config_path, F_OK) < 0 && errno == ENOENT) {
+		if (check_only) {
+			printf("%s: no configuration yet; built-in defaults would be "
+			       "used\n", config_path);
+			return 0;
+		}
+		if (chara_config_write_example(config_path))
+			_inf("wrote a starter configuration to %s", config_path);
+		else
+			_wrn("couldn't write %s: %s", config_path, strerror(errno));
+	}
+
 	if (!chara_config_load(&config, config_path)) {
 		if (check_only)
 			return 1;
-		_wrn("continuing with built-in defaults");
+		/* The parser fills the configuration as it reads it, so a file that
+		 * fails halfway through leaves a partly applied one behind - with no
+		 * bindings at all if it failed before reaching them, and so no way
+		 * to reload or log out. Start again from the built-in defaults. */
+		_wrn("%s: not applied; continuing with built-in defaults",
+		     config_path ? config_path : "configuration");
+		chara_config_finish(&config);
+		if (!chara_config_init(&config) || !chara_config_load(&config, NULL))
+			_err(1, "out of memory");
 	}
 	if (check_only) {
 		printf("%s: ok\n", config_path ? config_path : "defaults");

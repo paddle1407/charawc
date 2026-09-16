@@ -47,6 +47,14 @@ charawc -C
 charawc -C -c /path/to/config.lua
 ```
 
+Write the starter configuration, if there is not one already:
+
+```sh
+charawc --write-config
+```
+
+`install.sh` does this for you. An existing `config.lua` is never overwritten.
+
 ## The configuration file
 
 `config.lua` returns one table. Every setting is optional; anything you leave
@@ -65,7 +73,7 @@ return {
 
     appearance = {
         rings = {
-            { width = 2, focused = "#d3869b", unfocused = "#3c3836" },
+            { width = 2, focused = "#fabd2f", unfocused = "#3c3836" },
         },
     },
 
@@ -77,7 +85,16 @@ return {
 ```
 
 Reload it with `charactl reload` or the `reload` action. A configuration that
-fails to parse is reported and the running one is kept.
+fails to parse is reported and the running one is kept, so a bad edit cannot
+take the session down; fix the file and reload again.
+
+At startup there is no running configuration to fall back on, so:
+
+| On startup | charaWC does |
+| --- | --- |
+| No `config.lua` | Writes the starter one shown by `--write-config`, then loads it. |
+| `config.lua` fails to parse | Reports the error and starts on the built-in defaults, including the default bindings, so the session always has a working `reload` and `quit`. |
+| `config.lua` parses | Uses it. |
 
 ---
 
@@ -140,7 +157,7 @@ its own thickness and its own colour for the focused and unfocused states.
 ```lua
 appearance = {
     rings = {
-        { width = 2, focused = "#d3869b", unfocused = "#3c3836" },
+        { width = 2, focused = "#fabd2f", unfocused = "#3c3836" },
         { width = 1, focused = "#1d2021", unfocused = "#1d2021" },
     },
 }
@@ -381,17 +398,23 @@ bar = {
     height = 28,
     background = "#1d2021",
     foreground = "#ebdbb2",
-    accent = "#d3869b",
+    accent = "#fabd2f",
     modules = {
         left = { "workspaces", "window" },
         right = { "network", "volume", "clock" },
     },
-    clock = { format = "%a %d %b  %H:%M", interval = 30 },
+    clock = { format = "%a %d/%m/%Y  %H:%M", interval = 30 },
 }
 ```
 
 Available modules are `workspaces`, `window`, `taskbar`, `clock`, `cpu`,
 `memory`, `network` and `volume`.
+
+`clock.format` is a `strftime` format, so `%H:%M` is a 24-hour clock and
+`%I:%M %p` a 12-hour one. Note that `%M` is the minute but `%m` is the month
+number, and `%h` is the abbreviated month name, not the hour. `interval` is
+how often the clock is re-read, in seconds; keep it well under a minute for a
+`%M` clock, or the minute on show can lag behind by nearly that long.
 
 ---
 

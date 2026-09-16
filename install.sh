@@ -135,36 +135,9 @@ DesktopNames=charaWC
 DESKTOP_ENTRY
 chmod 644 "$DESKTOP"
 
-if [ ! -e "$CONFIG_DIR/config.lua" ]; then
-	cat > "$CONFIG_DIR/config.lua" <<'STARTER'
--- charaWC configuration. See CONFIG.md for every setting.
-return {
-	mod = "logo",
-
-	layout = {
-		mode = "split",     -- floating, split or quad
-		axis = "vertical",  -- windows side by side
-		max  = 4,           -- further windows open floating
-	},
-
-	appearance = {
-		rings = {
-			{ width = 2, focused = "#d3869b", unfocused = "#3c3836" },
-		},
-		titlebar = { enabled = false },
-	},
-
-	bindings = {
-		{ key = "mod+Return", spawn = { "foot" } },
-		{ key = "mod+q", action = "close" },
-		{ key = "mod+space", action = "floating" },
-		{ key = "mod+shift+r", action = "reload" },
-		{ key = "mod+shift+e", action = "quit" },
-	},
-}
-STARTER
-	echo "wrote a starter $CONFIG_DIR/config.lua"
-fi
+# charawc owns the starter configuration, so that a first run from the build
+# tree seeds the same file this does. It never overwrites an existing one.
+"$BUILT/charawc" --write-config
 
 echo "installed into $CONFIG_DIR"
 echo
