@@ -211,7 +211,7 @@ static void config_defaults(struct bar_config *config)
 	config->spacing = 14;
 	config->background = 0xff282828;
 	config->foreground = 0xffebdbb2;
-	config->accent = 0xffd3869b;
+	config->accent = 0xfffabd2f;
 	config->muted = 0xffa89984;
 	strcpy(config->font, "MonaspiceRn Nerd Font Regular 10");
 	config->modules[0][0] = MODULE_WORKSPACES;

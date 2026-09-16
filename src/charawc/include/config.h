@@ -56,6 +56,12 @@ struct config {
 bool chara_config_init(struct config *);
 bool chara_config_load(struct config *, const char *path);
 void chara_config_finish(struct config *);
+/* Hands src's contents to dst and leaves src empty. struct config embeds
+ * intrusive wl_list heads, whose elements point back at the head's own
+ * address, so a configuration cannot be relocated by assignment. */
+void chara_config_move(struct config *dst, struct config *src);
+/* Writes the starter configuration, but never over an existing file. */
+bool chara_config_write_example(const char *path);
 bool chara_config_bindings(struct config *);
 void chara_config_start(struct config *);
 char *chara_config_path(const char *filename);
@@ -65,6 +71,7 @@ bool chara_parse_key(const char *, uint32_t mod, uint32_t *mods, uint32_t *key,
                      bool modifiers_only);
 bool chara_binding_install(struct binding *); /* takes ownership on success */
 bool chara_binding_remove(uint32_t mods, uint32_t key);
+void chara_binding_free(struct binding *);
 void chara_bindings_finish(void); /* after swc_finalize */
 bool chara_bindings_prepare(struct config *, struct swc_binding_batch *);
 void chara_bindings_replace(struct config *);

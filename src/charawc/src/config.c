@@ -526,7 +526,7 @@ parse_rings(lua_State *L, struct config *cfg, int index)
 		FIELDS(L, t, path, "width", "focused", "unfocused");
 
 		struct ring *ring = &cfg->values.rings[i - 1];
-		*ring = (struct ring){ 1, 0xffd3869b, 0xff3c3836 };
+		*ring = (struct ring){ 1, 0xfffabd2f, 0xff3c3836 };
 		if (field(L, t, "width")) { ring->width = integer(L, -1, path, 0, 64); lua_pop(L, 1); }
 		if (field(L, t, "focused")) { ring->focused = color(L, -1, path); lua_pop(L, 1); }
 		if (field(L, t, "unfocused")) { ring->unfocused = color(L, -1, path); lua_pop(L, 1); }
@@ -975,7 +975,7 @@ chara_config_init(struct config *cfg)
 		.maximize_titlebar = true,
 		.ring_count = 1,
 		.rings = {
-			{ .width = 2, .focused = 0xffd3869b, .unfocused = 0xff3c3836 },
+			{ .width = 2, .focused = 0xfffabd2f, .unfocused = 0xff3c3836 },
 		},
 		.title_format = strdup("%t"),
 	};
@@ -1105,10 +1105,7 @@ chara_config_finish(struct config *cfg)
 	struct binding *b, *bt;
 	wl_list_for_each_safe(b, bt, &cfg->bindings, link) {
 		wl_list_remove(&b->link);
-		chara_argv_free(b->argv);
-		free(b->action.selector);
-		free(b->action.text);
-		free(b);
+		chara_binding_free(b);
 	}
 	struct rule *r, *rt;
 	wl_list_for_each_safe(r, rt, &cfg->rules, link) {
@@ -1134,6 +1131,27 @@ chara_config_finish(struct config *cfg)
 	free(cfg->wallpaper.path);
 	free(cfg->wallpaper.pixels);
 	decor_destroy(cfg->decoration);
+}
+
+void
+chara_config_move(struct config *dst, struct config *src)
+{
+	struct wl_list *to[] = { &dst->bindings, &dst->rules, &dst->exec_once,
+	                         &dst->exec, &dst->monitors };
+	struct wl_list *from[] = { &src->bindings, &src->rules, &src->exec_once,
+	                           &src->exec, &src->monitors };
+
+	/* The scalar members move by assignment; the list heads must not, since
+	 * every element's prev/next points back at the head it was inserted on.
+	 * Copying one would leave the elements addressing src's head - which for
+	 * an empty list is the head itself, so a later walk of dst would hand
+	 * container_of() an interior pointer of src and free() would abort. */
+	*dst = *src;
+	for (size_t i = 0; i < sizeof(to) / sizeof(*to); ++i) {
+		wl_list_init(to[i]);
+		wl_list_insert_list(to[i], from[i]); /* re-points elements at dst */
+		wl_list_init(from[i]);
+	}
 }
 
 bool
@@ -1163,6 +1181,111 @@ chara_startup_command_free(struct startup_command *c)
 	chara_argv_free(c->argv);
 	free(c->ready_socket);
 	free(c);
+}
+
+/* The configuration charaWC writes when it finds none. It is deliberately
+ * short: the settings not named here keep their built-in values, which
+ * CONFIG.md documents in full. */
+static const char config_example[] =
+	"-- charaWC configuration. See CONFIG.md for every setting.\n"
+	"--\n"
+	"-- charaWC wrote this file because it found none of its own. Edit it freely:\n"
+	"-- Super+Shift+R reloads it in place, and if an edit does not parse, charaWC\n"
+	"-- says so in the log and keeps running the configuration it already has.\n"
+	"\n"
+	"return {\n"
+	"	mod = \"logo\", -- Super/Windows key; also \"alt\" or \"ctrl+alt\"\n"
+	"\n"
+	"	layout = {\n"
+	"		mode = \"split\",    -- \"floating\", \"split\" or \"quad\"\n"
+	"		axis = \"vertical\", -- \"vertical\" side by side, \"horizontal\" stacked\n"
+	"		max = 4,           -- windows past this open floating\n"
+	"	},\n"
+	"\n"
+	"	appearance = {\n"
+	"		wallpaper = { background = \"#282828\" },\n"
+	"		titlebar = { enabled = true, height = 28 },\n"
+	"		rings = {\n"
+	"			{ width = 2, focused = \"#fabd2f\", unfocused = \"#3c3836\" },\n"
+	"		},\n"
+	"	},\n"
+	"\n"
+	"	bar = {\n"
+	"		enabled = true,\n"
+	"		position = \"top\",\n"
+	"		height = 30,\n"
+	"		modules = {\n"
+	"			left = { \"workspaces\" },\n"
+	"			center = { \"taskbar\" },\n"
+	"			right = { \"memory\", \"clock\" },\n"
+	"		},\n"
+	"		-- Formats are strftime: %H:%M is a 24-hour clock, %I:%M %p a 12-hour\n"
+	"		-- one. %H is the hour and %M the minute; %m and %h are months.\n"
+	"		clock = { format = \"%a %d/%m/%Y  %H:%M\", interval = 30 },\n"
+	"		memory = { format = \"RAM %p%\", interval = 2 },\n"
+	"	},\n"
+	"\n"
+	"	bindings = {\n"
+	"		{ key = \"mod+Return\", spawn = { \"foot\" } },\n"
+	"		{ key = \"mod+q\", action = \"close\" },\n"
+	"		{ key = \"mod+f\", action = \"maximize\" },\n"
+	"		{ key = \"mod+space\", action = \"floating\" },\n"
+	"		{ key = \"mod+j\", action = \"focus_next\" },\n"
+	"		{ key = \"mod+k\", action = \"focus_prev\" },\n"
+	"		{ key = \"mod+shift+r\", action = \"reload\" }, -- re-read this file\n"
+	"		{ key = \"mod+shift+e\", action = \"quit\" },   -- log out\n"
+	"	},\n"
+	"}\n";
+
+bool
+chara_config_write_example(const char *path)
+{
+	if (!path) {
+		errno = EINVAL;
+		return false;
+	}
+	/* The configuration directory may not exist yet on a first run. */
+	const char *slash = strrchr(path, '/');
+	if (slash && slash != path) {
+		char *dir = strndup(path, (size_t)(slash - path));
+		if (!dir)
+			return false;
+		/* Only the last component is created; anything above it, such as
+		 * ~/.config, is the caller's business. */
+		if (mkdir(dir, 0755) < 0 && errno != EEXIST) {
+			free(dir);
+			return false;
+		}
+		free(dir);
+	}
+	/* O_EXCL: an existing configuration is never overwritten, so this is
+	 * safe to call unconditionally. */
+	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+	if (fd < 0)
+		return false;
+	const char *p = config_example;
+	size_t left = sizeof(config_example) - 1;
+	while (left > 0) {
+		ssize_t n = write(fd, p, left);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			int saved = errno;
+			close(fd);
+			unlink(path); /* Do not leave a truncated config behind. */
+			errno = saved;
+			return false;
+		}
+		p += n;
+		left -= (size_t)n;
+	}
+	if (close(fd) < 0) {
+		int saved = errno;
+		unlink(path);
+		errno = saved;
+		return false;
+	}
+	return true;
 }
 
 char *

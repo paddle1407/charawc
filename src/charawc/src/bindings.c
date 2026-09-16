@@ -23,6 +23,20 @@ chara_argv_free(char **argv)
 	free(argv);
 }
 
+/* Bindings are freed from three places: a replaced binding, the installed
+ * set at shutdown, and a configuration that was never installed. All three
+ * own the same fields, so they release them the same way. */
+void
+chara_binding_free(struct binding *binding)
+{
+	if (!binding)
+		return;
+	chara_argv_free(binding->argv);
+	free(binding->action.selector);
+	free(binding->action.text);
+	free(binding);
+}
+
 char **
 chara_argv_copy(char *const *argv)
 {
@@ -140,8 +154,7 @@ chara_binding_remove(uint32_t mods, uint32_t key)
 			continue;
 		swc_remove_binding(SWC_BINDING_KEY, mods, key);
 		wl_list_remove(&binding->link);
-		chara_argv_free(binding->argv);
-		free(binding);
+		chara_binding_free(binding);
 		return true;
 	}
 	return false;
@@ -165,8 +178,7 @@ chara_bindings_finish(void)
 	struct binding *binding, *tmp;
 	wl_list_for_each_safe(binding, tmp, &bindings, link) {
 		wl_list_remove(&binding->link);
-		chara_argv_free(binding->argv);
-		free(binding);
+		chara_binding_free(binding);
 	}
 }
 
