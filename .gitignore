@@ -1,0 +1,35 @@
+# Build tree produced by ./build.sh
+/prefix/
+
+# Scratch / experiments
+/temp/
+
+# Vendored subprojects — each lives in its own repository.
+# They are clones with their own .git, so git would refuse to track them
+# as plain directories anyway.
+/src/libspng/
+/src/neuswc/
+/src/neuwld/
+
+# Generated wayland-scanner sources
+/src/charabar/build/
+
+# Binaries
+/src/charabar/charabar
+/src/charawc/charawc
+/src/charawc/charactl
+
+# Compiler leftovers
+*.o
+*.a
+*.so
+*.so.*
+*.d
+*.gcda
+*.gcno
+core
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
