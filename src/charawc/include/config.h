@@ -38,6 +38,10 @@ struct monitor_config {
 
 struct bar_config {
 	bool enabled;
+	/* Digest of the whole bar table. charabar reads config.lua only when it
+	 * starts, so charaWC restarts it whenever this changes -- including for
+	 * the settings charaWC merely validates and never keeps. */
+	uint64_t digest;
 };
 
 struct config {
@@ -105,6 +109,7 @@ void chara_restore(struct client *);
 bool chara_set_fullscreen(struct client *, bool, struct swc_screen *);
 bool chara_set_maximized(struct client *, bool);
 void chara_update_mode_geometry(struct client *);
+void chara_window_changed(struct client *); /* after an interactive drag */
 struct screen *chara_window_screen(const struct client *);
 struct screen *chara_active_screen(void);
 uint8_t chara_active_ws(void);

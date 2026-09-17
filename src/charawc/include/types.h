@@ -19,6 +19,8 @@ struct ring {
 struct values {
 	uint32_t mod;
 	bool     raise_maximized_on_click;
+	/* Hovering a window brings it to the front, not just the keyboard. */
+	bool     raise_on_hover;
 	/* Keep the border and the titlebar on screen while maximized. */
 	bool     maximize_borders, maximize_titlebar;
 	struct ring rings[CHARA_MAX_RINGS];

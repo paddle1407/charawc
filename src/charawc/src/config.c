@@ -704,6 +704,105 @@ bar_string(lua_State *L, int index, const char *name, const char *path, bool emp
 	}
 }
 
+/* charaWC keeps only bar.enabled, but charabar reads every other setting in
+ * the section itself, once, at startup. Hashing the table is what lets a
+ * reload notice a change charaWC never stores, such as a module's format. */
+
+#define BAR_DIGEST_MAX_KEYS 64
+#define BAR_DIGEST_MAX_DEPTH 8
+#define BAR_DIGEST_BASIS UINT64_C(0xcbf29ce484222325)
+
+static void digest_value(lua_State *L, int index, int depth, uint64_t *hash);
+
+static void
+digest_bytes(uint64_t *hash, const void *data, size_t length)
+{
+	const unsigned char *bytes = data;
+	for (size_t i = 0; i < length; ++i) {
+		*hash ^= bytes[i];
+		*hash *= UINT64_C(0x100000001b3);
+	}
+}
+
+static int
+digest_key_compare(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static void
+digest_table(lua_State *L, int index, int depth, uint64_t *hash)
+{
+	const char *keys[BAR_DIGEST_MAX_KEYS];
+	size_t count = 0, n = lua_rawlen(L, index);
+
+	digest_bytes(hash, &n, sizeof n);
+	for (size_t i = 1; i <= n; ++i) {
+		lua_rawgeti(L, index, (int)i);
+		digest_value(L, -1, depth + 1, hash);
+		lua_pop(L, 1);
+	}
+	/* lua_next walks in an unspecified order, so collect the string keys and
+	 * sort them: the digest has to follow the settings, not the hash table's
+	 * layout. The names stay valid because the table still holds them. */
+	lua_pushnil(L);
+	while (lua_next(L, index)) {
+		if (lua_type(L, -2) == LUA_TSTRING) {
+			if (count == BAR_DIGEST_MAX_KEYS)
+				luaL_error(L, "bar: too many settings in one table");
+			keys[count++] = lua_tostring(L, -2);
+		}
+		lua_pop(L, 1);
+	}
+	qsort(keys, count, sizeof *keys, digest_key_compare);
+	for (size_t i = 0; i < count; ++i) {
+		digest_bytes(hash, keys[i], strlen(keys[i]) + 1);
+		lua_getfield(L, index, keys[i]);
+		digest_value(L, -1, depth + 1, hash);
+		lua_pop(L, 1);
+	}
+}
+
+static void
+digest_value(lua_State *L, int index, int depth, uint64_t *hash)
+{
+	unsigned char tag;
+
+	index = lua_absindex(L, index);
+	if (depth > BAR_DIGEST_MAX_DEPTH)
+		luaL_error(L, "bar: settings nested too deeply");
+	luaL_checkstack(L, 4, "bar digest");
+	tag = (unsigned char)lua_type(L, index);
+	digest_bytes(hash, &tag, sizeof tag);
+	switch (lua_type(L, index)) {
+	case LUA_TBOOLEAN: {
+		unsigned char value = lua_toboolean(L, index) ? 1 : 0;
+		digest_bytes(hash, &value, sizeof value);
+		break;
+	}
+	case LUA_TNUMBER: {
+		lua_Number value = lua_tonumber(L, index);
+		if (value == 0) value = 0; /* one digest for 0.0 and -0.0 */
+		digest_bytes(hash, &value, sizeof value);
+		break;
+	}
+	case LUA_TSTRING: {
+		size_t length;
+		/* Already known to be a string, so this cannot coerce a number in
+		 * place and confuse an enclosing lua_next. */
+		const char *value = lua_tolstring(L, index, &length);
+		digest_bytes(hash, &length, sizeof length);
+		digest_bytes(hash, value, length);
+		break;
+	}
+	case LUA_TTABLE:
+		digest_table(L, index, depth, hash);
+		break;
+	default:
+		break; /* parse_bar rejects every other type before this runs */
+	}
+}
+
 static void
 parse_bar(lua_State *L, struct config *cfg, int index)
 {
@@ -809,6 +908,9 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 		}
 		lua_pop(L, 1);
 	}
+	/* Last, so a rejected section is reported rather than digested. */
+	cfg->bar.digest = BAR_DIGEST_BASIS;
+	digest_value(L, index, 0, &cfg->bar.digest);
 }
 
 /* ----------------------------------------------------------------- load */
@@ -861,8 +963,8 @@ parse(lua_State *L)
 
 	int root = lua_gettop(L);
 	FIELDS(L, root, "config", "mod", "raise_maximized_on_click",
-	       "appearance", "bar", "bindings", "rules", "exec_once", "exec",
-	       "monitors");
+	       "raise_on_hover", "appearance", "bar", "bindings", "rules",
+	       "exec_once", "exec", "monitors");
 
 	if (field(L, root, "mod")) {
 		uint32_t key;
@@ -872,6 +974,10 @@ parse(lua_State *L)
 	}
 	if (field(L, root, "raise_maximized_on_click")) {
 		cfg->values.raise_maximized_on_click = boolean(L, -1, "raise_maximized_on_click");
+		lua_pop(L, 1);
+	}
+	if (field(L, root, "raise_on_hover")) {
+		cfg->values.raise_on_hover = boolean(L, -1, "raise_on_hover");
 		lua_pop(L, 1);
 	}
 	if (field(L, root, "appearance")) { parse_appearance(L, cfg, -1, filename); lua_pop(L, 1); }
@@ -914,6 +1020,7 @@ chara_config_init(struct config *cfg)
 	wl_list_init(&cfg->exec);
 	wl_list_init(&cfg->monitors);
 
+	cfg->bar.digest = BAR_DIGEST_BASIS; /* matches a configuration with no bar table */
 	cfg->wallpaper.background = 0xff1d2021;
 	cfg->wallpaper.mode = SWC_WALLPAPER_FILL;
 	cfg->values = (struct values){

@@ -271,11 +271,31 @@ workspaces, `mod+shift+r` reload, `mod+shift+e` quit.
 
 | Action | Binding |
 | --- | --- |
-| Move a window | `mod` + left drag |
+| Move a window | `mod` + left drag, or drag its titlebar |
 | Resize a window | `mod` + right drag |
 
-Dragging a maximized window gives up being maximized first. Focus follows the
-pointer, and each monitor remembers the window that was last focused on it.
+Both drags act on the window under the pointer, and dragging a maximized
+window gives up being maximized first. A window dropped on another monitor
+belongs to that monitor, and to the workspace that monitor is showing.
+
+Focus follows the pointer, and each monitor remembers the window that was last
+focused on it. Focus alone does not change the stacking order:
+
+```lua
+raise_on_hover = true,
+```
+
+brings a window to the front as the pointer enters it. It is off by default, so
+that passing over a stack of windows does not shuffle it. Clicking a window
+raises it either way, and so does picking one from a taskbar.
+
+## Stacking
+
+A window raised by hand stays raised. Leaving a workspace and coming back does
+not restack anything, and neither does moving a window between monitors. A
+window is brought to the front when it is opened, clicked, dragged, restored
+from minimized, sent to the workspace already on screen, or activated from a
+taskbar or dock.
 
 ## Monitors and workspaces
 
@@ -329,6 +349,10 @@ reason is logged.
 
 charabar is a separate program that reads the same `config.lua`. Set
 `bar.enabled = true` and charaWC starts and stops it with the session.
+
+charabar reads its configuration once, when it starts, so charaWC restarts it
+on a reload whenever anything in the `bar` section changed. A reload that
+leaves the section alone leaves the running bar alone.
 
 ```lua
 bar = {

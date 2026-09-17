@@ -17,6 +17,7 @@ static char *config_path;
 static bool reload_queued;
 static struct wl_event_source *reload_source;
 static pid_t bar_pid;
+static bool bar_restarting;
 
 /* ---------------------------------------------------------- socket path */
 
@@ -90,26 +91,41 @@ apply_wallpaper(void)
 /* ------------------------------------------------------------------ bar */
 
 static void
-update_bar(bool enabled)
+spawn_bar(void)
 {
-	if (enabled == (bar_pid > 0))
-		return;
-	if (!enabled) {
-		kill(-bar_pid, SIGTERM);
-		bar_pid = 0;
-		return;
-	}
 	char *argv[] = { (char *)"charabar", NULL };
 	bar_pid = chara_spawn_process(argv, true);
 	if (bar_pid < 0)
 		bar_pid = 0;
 }
 
+/* charabar reads the configuration once, when it starts, so a changed bar
+ * section only takes effect if it is restarted. */
+static void
+update_bar(bool enabled, bool restart)
+{
+	if (bar_pid > 0 && (!enabled || restart)) {
+		/* Respawn once the old bar is gone rather than here: two bars would
+		 * claim an exclusive zone each until the first finished exiting.
+		 * bar_pid stays set so the exit is recognised as this bar's. */
+		bar_restarting = enabled;
+		kill(-bar_pid, SIGTERM);
+		return;
+	}
+	if (enabled && bar_pid <= 0)
+		spawn_bar();
+}
+
 void
 chara_child_exited(pid_t pid)
 {
-	if (pid == bar_pid)
-		bar_pid = 0;
+	if (pid != bar_pid)
+		return;
+	bar_pid = 0;
+	if (bar_restarting) {
+		bar_restarting = false;
+		spawn_bar();
+	}
 }
 
 /* -------------------------------------------------------------- screens */
@@ -165,6 +181,10 @@ on_scr_entered(void *data)
 	struct screen *s = data;
 
 	wm.scr = s;
+	/* Mid-drag the pointer is carrying a window across, so the monitor it
+	 * arrives on does not get to take the focus with it. */
+	if (wm.grab.active)
+		return;
 	if (s->focus)
 		chara_focus(s->focus);
 }
@@ -282,11 +302,12 @@ reload_now(void *data)
 	struct config previous;
 	chara_config_move(&previous, &config);
 	chara_config_move(&config, &next);
+	bool bar_changed = previous.bar.digest != config.bar.digest;
 	chara_config_finish(&previous);
 
 	load_cursor_theme();
 	apply_wallpaper();
-	update_bar(config.bar.enabled);
+	update_bar(config.bar.enabled, bar_changed);
 	chara_bind_mouse(config.values.mod);
 
 	struct client *client;
@@ -474,7 +495,7 @@ main(int argc, char **argv)
 	chara_bind_mouse(config.values.mod);
 	load_cursor_theme();
 	apply_wallpaper();
-	update_bar(config.bar.enabled);
+	update_bar(config.bar.enabled, false);
 	chara_config_start(&config);
 
 	wl_display_run(wm.dpy);

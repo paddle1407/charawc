@@ -179,7 +179,9 @@ chara_sync_windows(void)
 			continue;
 		c->visible = visible;
 		if (visible)
-			swc_window_show(c->win);
+			/* Coming back, not appearing: a window keeps the place in the
+			 * stack it had when its workspace was switched away from. */
+			swc_window_show_in_place(c->win);
 		else
 			swc_window_hide(c->win);
 	}
@@ -244,10 +246,55 @@ chara_ws_move_to(uint8_t ws, struct client *c)
 	swc_window_set_workspace(c->win, ws);
 	chara_sync_windows();
 	(void)from;
+	/* Sent to the workspace already on screen: showing no longer raises, and
+	 * a window put here on purpose should not arrive underneath something. */
+	if (c->scr && c->ws == c->scr->ws && !c->minimized)
+		swc_window_raise(c->win);
 	if (c->scr) {
 		if (wm.cur == c)
 			chara_focus(first_on(c->scr));
 	}
+}
+
+/* ----------------------------------------------------------------- drags */
+
+/*
+ * Where a finished drag is written back. The compositor moves the view while
+ * the button is held; the window's stored geometry, the monitor it ended up
+ * over, and that monitor's workspace only catch up once it is let go.
+ */
+void
+chara_window_changed(struct client *c)
+{
+	struct swc_rectangle g;
+	struct screen *s;
+
+	if (!c)
+		return;
+	if (swc_window_get_geometry(c->win, &g)) {
+		c->x = g.x;
+		c->y = g.y;
+		c->width = g.width;
+		c->height = g.height;
+	}
+	s = chara_window_screen(c);
+	if (!s || s == c->scr)
+		return;
+	/*
+	 * Dropped on another monitor, so it belongs to that monitor now, and to
+	 * the workspace that monitor is showing. Without the second half, a window
+	 * dragged across keeps the workspace number it had, and the next switch on
+	 * the monitor it came from hides a window sitting in plain sight on this
+	 * one.
+	 */
+	c->scr = s;
+	if (c->ws != s->ws) {
+		c->ws = s->ws;
+		swc_window_set_workspace(c->win, c->ws);
+		chara_sync_windows();
+	}
+	if (wm.cur == c)
+		s->focus = c;
 }
 
 /* ---------------------------------------------------------- window state */
@@ -364,6 +411,9 @@ chara_restore(struct client *c)
 		c->ws = c->scr->ws;
 	swc_window_set_workspace(c->win, c->ws);
 	chara_sync_windows();
+	/* Showing no longer raises, and a window coming back from the taskbar
+	 * that stayed buried would look like nothing happened. */
+	swc_window_raise(c->win);
 	chara_focus(c);
 }
 
@@ -441,6 +491,8 @@ on_entered(void *data)
 	if (c->scr)
 		wm.scr = c->scr;
 	chara_focus(c);
+	if (config.values.raise_on_hover)
+		swc_window_raise(c->win);
 }
 
 static void
@@ -489,6 +541,28 @@ on_titlebar_action(void *data, enum swc_titlebar_action action)
 	}
 }
 
+/*
+ * A titlebar drag is driven by the compositor, so this is the only word the
+ * window manager gets about it. Holding the grab for its duration keeps focus
+ * from following the pointer onto another monitor while the window is still in
+ * mid-air -- which, since focus repaints titlebars, used to cut the drag short
+ * at the monitor boundary.
+ */
+static void
+on_interactive_move(void *data, bool active)
+{
+	struct client *c = data;
+
+	if (active) {
+		wm.grab = (struct grab){ .active = true, .resize = false, .client = c };
+		chara_focus(c);
+		return;
+	}
+	if (wm.grab.client == c)
+		wm.grab = (struct grab){0};
+	chara_window_changed(c);
+}
+
 static void
 on_request_activate(void *data)
 {
@@ -498,6 +572,9 @@ on_request_activate(void *data)
 		chara_restore(c);
 	else if (c->scr && c->ws != c->scr->ws)
 		chara_ws_go_to(c->scr, c->ws);
+	/* Picking a window out of a taskbar means wanting to see it, so this one
+	 * is not optional: a raise is the whole point of the request. */
+	swc_window_raise(c->win);
 	chara_focus(c);
 }
 
@@ -551,6 +628,7 @@ static const struct swc_window_handler win_handler = {
 	.move = on_request_move,
 	.resize = on_request_resize,
 	.titlebar_action = on_titlebar_action,
+	.interactive_move = on_interactive_move,
 	.request_activate = on_request_activate,
 	.request_minimized = on_request_minimized,
 	.request_maximized = on_request_maximized,
@@ -602,26 +680,58 @@ chara_new_window(struct swc_window *win)
 
 /* ----------------------------------------------------------- mod + drag */
 
+/*
+ * The window under the cursor, which is the one a mod+drag acts on. Dragging
+ * the focused window instead meant grabbing empty desktop, or a window on the
+ * other monitor, and watching something nowhere near the pointer move.
+ */
+static struct client *
+client_at_pointer(void)
+{
+	struct swc_window *win;
+	struct client *c;
+	int32_t x, y;
+
+	if (!swc_cursor_position(&x, &y))
+		return NULL;
+	if (!(win = swc_window_at(x / 256, y / 256)))
+		return NULL;
+	wl_list_for_each(c, &wm.clients, link)
+		if (c->win == win)
+			return c;
+	return NULL;
+}
+
+/* End of a mod+drag: the grab is released and the result written back. */
+static void
+end_grab(bool resize)
+{
+	struct client *c = wm.grab.client;
+
+	if (!wm.grab.active || wm.grab.resize != resize || !c)
+		return;
+	if (resize)
+		swc_window_end_resize(c->win);
+	else
+		swc_window_end_move(c->win);
+	wm.grab = (struct grab){0};
+	chara_window_changed(c);
+}
+
 static void
 move_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 {
 	(void)data, (void)time, (void)value;
-	struct client *c = wm.cur;
+	struct client *c;
 
 	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
-		if (wm.grab.active && !wm.grab.resize && wm.grab.client) {
-			swc_window_end_move(wm.grab.client->win);
-			struct swc_rectangle g;
-			if (swc_window_get_geometry(wm.grab.client->win, &g)) {
-				wm.grab.client->x = g.x;
-				wm.grab.client->y = g.y;
-			}
-			wm.grab = (struct grab){0};
-		}
+		end_grab(false);
 		return;
 	}
+	c = client_at_pointer();
 	if (!c || !c->movable || c->fullscreen)
 		return;
+	chara_focus(c);
 	chara_set_maximized(c, false);
 	wm.grab = (struct grab){ .active = true, .resize = false, .client = c };
 	swc_window_begin_move(c->win);
@@ -631,22 +741,16 @@ static void
 resize_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 {
 	(void)data, (void)time, (void)value;
-	struct client *c = wm.cur;
+	struct client *c;
 
 	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
-		if (wm.grab.active && wm.grab.resize && wm.grab.client) {
-			swc_window_end_resize(wm.grab.client->win);
-			struct swc_rectangle g;
-			if (swc_window_get_geometry(wm.grab.client->win, &g)) {
-				wm.grab.client->width = g.width;
-				wm.grab.client->height = g.height;
-			}
-			wm.grab = (struct grab){0};
-		}
+		end_grab(true);
 		return;
 	}
+	c = client_at_pointer();
 	if (!c || !c->resizable || c->fullscreen)
 		return;
+	chara_focus(c);
 	chara_set_maximized(c, false);
 	wm.grab = (struct grab){ .active = true, .resize = true, .client = c };
 	swc_window_begin_resize(c->win, SWC_WINDOW_EDGE_AUTO);
