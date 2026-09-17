@@ -4,7 +4,7 @@ A small Wayland compositor for Linux, built on
 [neuswc](https://github.com/paddle1407/neuswc) and
 [neuwld](https://github.com/paddle1407/neuwld).
 
-- Windows float, split or tile in quads, switched live.
+- Windows float, and are moved, resized and maximized from the keyboard or the mouse.
 - One Lua configuration file, reloaded in place with Super+Shift+R.
 - `charactl`, a control client that drives the running session from the shell.
 - `charabar`, a status bar that reads the same configuration file.

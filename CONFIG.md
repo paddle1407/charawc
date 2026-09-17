@@ -65,12 +65,6 @@ with its line instead of being ignored.
 return {
     mod = "logo",
 
-    layout = {
-        mode = "split",
-        axis = "vertical",
-        max  = 4,
-    },
-
     appearance = {
         rings = {
             { width = 2, focused = "#fabd2f", unfocused = "#3c3836" },
@@ -97,57 +91,6 @@ At startup there is no running configuration to fall back on, so:
 | `config.lua` parses | Uses it. |
 
 ---
-
-## Layouts
-
-`layout.mode` decides where a new window goes.
-
-| Mode | Behaviour |
-| --- | --- |
-| `floating` | Every window opens in the middle of the active monitor. |
-| `split` | All windows share the screen equally along the axis. |
-| `quad` | The first two windows share the screen, the third takes a bottom band, the fourth splits that band. |
-
-`layout.axis` is the direction of every split: `vertical` puts windows side by
-side, `horizontal` stacks them. `layout.max` is how many windows a monitor
-tiles before the rest open floating — up to 16, and at most 4 in `quad`.
-
-In `split`, three windows are thirds and four are quarters — adding a window
-resizes all of them, it does not subdivide the last one:
-
-```
- 2 windows      3 windows       4 windows
-+-----+-----+  +---+---+---+  +--+--+--+--+
-|     |     |  |   |   |   |  |  |  |  |  |
-|  1  |  2  |  | 1 | 2 | 3 |  |1 |2 |3 |4 |
-|     |     |  |   |   |   |  |  |  |  |  |
-+-----+-----+  +---+---+---+  +--+--+--+--+
-```
-
-With `mode = "quad"` and `axis = "vertical"` the four windows form a box:
-
-```
- 1 window     2 windows     3 windows     4 windows
-+---------+  +----+----+  +----+----+  +----+----+
-|         |  |    |    |  |  1 |  2 |  |  1 |  2 |
-|    1    |  |  1 |  2 |  +----+----+  +----+----+
-|         |  |    |    |  |    3    |  |  3 |  4 |
-+---------+  +----+----+  +---------+  +----+----+
-```
-
-A tiled window becomes floating with `charactl floating`, by dragging it, or
-with `floating = true` in a rule. One tiled window fills the screen.
-
-In `quad`, three windows are deliberately uneven: the third takes the whole
-bottom band. Two and four windows are equal.
-
-```lua
-layout = {
-    mode = "quad",       -- floating, split or quad
-    axis = "vertical",   -- vertical or horizontal
-    max  = 4,            -- 1 to 16
-}
-```
 
 ## Borders
 
@@ -287,7 +230,6 @@ rules = {
 | `x`, `y` | Position. Both together, and not with `center`. |
 | `width`, `height` | Size. Both together. |
 | `center` | Centre on the monitor. |
-| `floating` | Keep the window out of the tiling. |
 | `titlebar` | Titlebar for this application only. |
 | `movable`, `resizable` | Allow dragging and resizing. Default `true`. |
 
@@ -305,28 +247,25 @@ bindings = {
     { key = "mod+d", spawn = { "fuzzel" } },
 
     { key = "mod+q", action = "close" },
-    { key = "mod+space", action = "floating" },
     { key = "mod+f", action = "maximize" },
     { key = "mod+j", action = "focus_next" },
     { key = "mod+1", action = "workspace", args = { 1 } },
     { key = "mod+shift+1", action = "move_workspace", args = { 1 } },
 
-    { key = "mod+t", action = "layout", value = "quad" },
     { key = "mod+b", action = "focus", window = "term" },
 }
 ```
 
-`args` holds the numeric arguments an action needs. `value` holds the string
-argument for `layout` and `layout_axis`. `window` targets a specific window;
-without it, actions apply to the focused one.
+`args` holds the numeric arguments an action needs. `window` targets a
+specific window; without it, actions apply to the focused one.
 
 Key names come from xkbcommon: `Return`, `space`, `BackSpace`, `Tab`, `Escape`,
 `F1`, `a`, `1`, and so on.
 
 Leaving `bindings` out entirely gives a default set: `mod+Return` a terminal,
-`mod+q` close, `mod+f` maximize, `mod+shift+f` fullscreen, `mod+space`
-floating, `mod+m`/`mod+n` minimize and restore, `mod+c` centre, `mod+j`/`mod+k`
-focus, `mod+1`..`mod+9` workspaces, `mod+shift+r` reload, `mod+shift+e` quit.
+`mod+q` close, `mod+f` maximize, `mod+shift+f` fullscreen, `mod+m`/`mod+n`
+minimize and restore, `mod+c` centre, `mod+j`/`mod+k` focus, `mod+1`..`mod+9`
+workspaces, `mod+shift+r` reload, `mod+shift+e` quit.
 
 ## Mouse
 
@@ -335,8 +274,8 @@ focus, `mod+1`..`mod+9` workspaces, `mod+shift+r` reload, `mod+shift+e` quit.
 | Move a window | `mod` + left drag |
 | Resize a window | `mod` + right drag |
 
-Dragging a tiled window makes it floating first. Focus follows the pointer, and
-each monitor remembers the window that was last focused on it.
+Dragging a maximized window gives up being maximized first. Focus follows the
+pointer, and each monitor remembers the window that was last focused on it.
 
 ## Monitors and workspaces
 
@@ -368,7 +307,7 @@ exec_once = {
 }
 
 exec = {
-    { "sh", "-c", "charactl layout split" },
+    { "sh", "-c", "charactl restore" },
 }
 ```
 
@@ -427,7 +366,7 @@ window.
 ```sh
 charactl focus term
 charactl move '#4' 40 0
-charactl layout quad
+charactl maximize term
 charactl list_windows
 ```
 
@@ -445,13 +384,12 @@ charactl list_windows
 | `maximize` | `<window>` — toggles |
 | `minimize` | `<window>` |
 | `restore` | `[window]` — without one, the most recently minimized |
-| `floating` | `<window>` — toggles tiled and floating |
 | `hide`, `show` | `<window>` |
 | `raise`, `lower` | `<window>` |
 | `close` | `<window>` |
 
-Geometry commands apply to floating windows; a tiled window is placed by the
-layout until you make it floating.
+Geometry commands do not apply to a window that is fullscreen or maximized;
+restore it first.
 
 ### Focus and workspaces
 
@@ -463,14 +401,6 @@ layout until you make it floating.
 | `workspace` | `<1-9>` |
 | `move_workspace` | `<window> <1-9>` |
 
-### Layout
-
-| Command | Arguments |
-| --- | --- |
-| `layout` | `floating`, `split` or `quad` |
-| `layout_axis` | `vertical` or `horizontal` |
-| `layout_max` | `<1-16>` |
-
 ### Queries
 
 | Command | Prints |
@@ -480,10 +410,9 @@ layout until you make it floating.
 | `get_title`, `get_app_id`, `get_id` | `<window>` |
 | `get_focus` | id of the focused window |
 | `get_workspace` | active workspace |
-| `get_layout` | `mode axis max` |
 | `get_screen_geometry` | active monitor's `x y width height` |
 | `get_cursor_position` | `x y` |
-| `list_windows` | one line per window: id, workspace, tiled or floating, geometry, app_id, title |
+| `list_windows` | one line per window: id, workspace, geometry, app_id, title |
 | `list_monitors` | one line per monitor: name, geometry, workspace |
 
 ### Session

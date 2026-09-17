@@ -144,15 +144,10 @@ reconcile(void)
 		struct screen *s = chara_window_screen(c);
 		if (!s && !wl_list_empty(&wm.screens))
 			s = wl_container_of(wm.screens.next, s, link);
-		if (s && s != c->scr) {
-			struct screen *from = c->scr;
+		if (s && s != c->scr)
 			c->scr = s;
-			if (from)
-				chara_layout_apply(from, c->ws);
-		}
 	}
 	chara_sync_windows();
-	chara_layout_all();
 }
 
 static void
@@ -161,7 +156,6 @@ on_scr_geometry(void *data)
 	struct screen *s = data;
 
 	screen_geometry(s);
-	chara_layout_apply(s, s->ws);
 	reconcile();
 }
 
@@ -298,7 +292,6 @@ reload_now(void *data)
 	struct client *client;
 	wl_list_for_each(client, &wm.clients, link)
 		chara_decorate(client, wm.cur == client);
-	chara_layout_all();
 	chara_config_start(&config);
 	_inf("reload: configuration applied");
 	return 0;
@@ -346,7 +339,6 @@ static void
 setup(void)
 {
 	wl_list_init(&wm.clients);
-	wl_list_init(&wm.tiles);
 	wl_list_init(&wm.screens);
 	wm.running = true;
 

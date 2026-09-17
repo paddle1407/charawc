@@ -33,7 +33,6 @@ chara_binding_free(struct binding *binding)
 		return;
 	chara_argv_free(binding->argv);
 	free(binding->action.selector);
-	free(binding->action.text);
 	free(binding);
 }
 

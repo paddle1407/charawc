@@ -170,32 +170,6 @@ parse_argv(lua_State *L, char ***out, int index, const char *path)
 	}
 }
 
-/* --------------------------------------------------------------- layout */
-
-static void
-parse_layout(lua_State *L, struct config *cfg, int index)
-{
-	static const char *const modes[] = { "floating", "split", "quad", NULL };
-	static const char *const axes[] = { "vertical", "horizontal", NULL };
-
-	index = lua_absindex(L, index);
-	FIELDS(L, index, "layout", "mode", "axis", "max");
-	if (field(L, index, "mode")) {
-		cfg->layout.mode = one_of(L, -1, "layout.mode", modes);
-		lua_pop(L, 1);
-	}
-	if (field(L, index, "axis")) {
-		cfg->layout.axis = one_of(L, -1, "layout.axis", axes);
-		lua_pop(L, 1);
-	}
-	if (field(L, index, "max")) {
-		cfg->layout.max = integer(L, -1, "layout.max", 1, 16);
-		lua_pop(L, 1);
-	}
-	if (cfg->layout.mode == LAYOUT_QUAD && cfg->layout.max > 4)
-		luaL_error(L, "layout.max: the quad layout holds at most 4 windows");
-}
-
 /* ------------------------------------------------------------- bindings */
 
 static const struct command *
@@ -207,17 +181,11 @@ find_command(const char *name)
 	return NULL;
 }
 
-static bool
-takes_text(enum cmd command)
-{
-	return command == cmd_layout || command == cmd_layout_axis;
-}
-
 static void
 parse_binding(lua_State *L, struct config *cfg, int index, const char *path)
 {
 	index = lua_absindex(L, index);
-	FIELDS(L, index, path, "key", "spawn", "action", "args", "window", "value");
+	FIELDS(L, index, path, "key", "spawn", "action", "args", "window");
 
 	struct binding *b = calloc(1, sizeof(*b));
 	if (!b)
@@ -243,7 +211,7 @@ parse_binding(lua_State *L, struct config *cfg, int index, const char *path)
 		parse_argv(L, &b->argv, -1, path);
 		lua_pop(L, 1);
 		if (field(L, index, "action") || field(L, index, "args") ||
-		    field(L, index, "window") || field(L, index, "value"))
+		    field(L, index, "window"))
 			luaL_error(L, "%s: spawn cannot be combined with an action", path);
 		return;
 	}
@@ -263,16 +231,6 @@ parse_binding(lua_State *L, struct config *cfg, int index, const char *path)
 		lua_pop(L, 1);
 	}
 
-	if (takes_text(cmd->command)) {
-		if (!field(L, index, "value"))
-			luaL_error(L, "%s.value: '%s' requires %s", path, name, cmd->usage);
-		copy_string(L, &b->action.text, -1, path, false);
-		lua_pop(L, 1);
-		return;
-	}
-	if (field(L, index, "value"))
-		luaL_error(L, "%s.value: '%s' takes no string argument", path, name);
-
 	b->action.argc = cmd->argc;
 	if (!field(L, index, "args")) {
 		if (cmd->argc)
@@ -287,8 +245,6 @@ parse_binding(lua_State *L, struct config *cfg, int index, const char *path)
 		int32_t min = -32768, max = 32767;
 		if (cmd->command == cmd_workspace || cmd->command == cmd_move_workspace)
 			min = 1, max = CHARA_WORKSPACES;
-		else if (cmd->command == cmd_layout_max)
-			min = 1, max = 16;
 		else if (cmd->command == cmd_resize_absolute ||
 		         (cmd->command == cmd_teleport && i >= 2))
 			min = 1, max = 32768;
@@ -324,7 +280,6 @@ default_bindings(struct config *cfg)
 	    !default_binding(cfg, "mod+q", cmd_close, 0, NULL) ||
 	    !default_binding(cfg, "mod+f", cmd_maximize, 0, NULL) ||
 	    !default_binding(cfg, "mod+shift+f", cmd_fullscreen, 0, NULL) ||
-	    !default_binding(cfg, "mod+space", cmd_floating, 0, NULL) ||
 	    !default_binding(cfg, "mod+m", cmd_minimize, 0, NULL) ||
 	    !default_binding(cfg, "mod+n", cmd_restore, 0, NULL) ||
 	    !default_binding(cfg, "mod+c", cmd_center, 0, NULL) ||
@@ -359,7 +314,7 @@ parse_rules(lua_State *L, struct config *cfg, int index)
 		lua_rawgeti(L, index, i);
 		int t = lua_gettop(L);
 		FIELDS(L, t, path, "app_id", "id", "width", "height", "x", "y",
-		       "center", "titlebar", "floating", "movable", "resizable");
+		       "center", "titlebar", "movable", "resizable");
 
 		struct rule *r = calloc(1, sizeof(*r));
 		if (!r)
@@ -408,11 +363,6 @@ parse_rules(lua_State *L, struct config *cfg, int index)
 		if (field(L, t, "titlebar")) {
 			r->has_titlebar = true;
 			r->titlebar = boolean(L, -1, path);
-			lua_pop(L, 1);
-		}
-		if (field(L, t, "floating")) {
-			r->has_floating = true;
-			r->floating = boolean(L, -1, path);
 			lua_pop(L, 1);
 		}
 		if (field(L, t, "movable")) { r->movable = boolean(L, -1, path); lua_pop(L, 1); }
@@ -910,7 +860,7 @@ parse(lua_State *L)
 	lua_call(L, 0, 1);
 
 	int root = lua_gettop(L);
-	FIELDS(L, root, "config", "mod", "raise_maximized_on_click", "layout",
+	FIELDS(L, root, "config", "mod", "raise_maximized_on_click",
 	       "appearance", "bar", "bindings", "rules", "exec_once", "exec",
 	       "monitors");
 
@@ -924,7 +874,6 @@ parse(lua_State *L)
 		cfg->values.raise_maximized_on_click = boolean(L, -1, "raise_maximized_on_click");
 		lua_pop(L, 1);
 	}
-	if (field(L, root, "layout")) { parse_layout(L, cfg, -1); lua_pop(L, 1); }
 	if (field(L, root, "appearance")) { parse_appearance(L, cfg, -1, filename); lua_pop(L, 1); }
 	if (field(L, root, "bar")) { parse_bar(L, cfg, -1); lua_pop(L, 1); }
 	if (field(L, root, "bindings")) {
@@ -967,7 +916,6 @@ chara_config_init(struct config *cfg)
 
 	cfg->wallpaper.background = 0xff1d2021;
 	cfg->wallpaper.mode = SWC_WALLPAPER_FILL;
-	cfg->layout = (struct layout){ LAYOUT_FLOATING, SPLIT_VERTICAL, 4 };
 	cfg->values = (struct values){
 		.mod = SWC_MOD_LOGO,
 		/* Keep the frame on screen when a window is maximized. */
@@ -1196,12 +1144,6 @@ static const char config_example[] =
 	"return {\n"
 	"	mod = \"logo\", -- Super/Windows key; also \"alt\" or \"ctrl+alt\"\n"
 	"\n"
-	"	layout = {\n"
-	"		mode = \"split\",    -- \"floating\", \"split\" or \"quad\"\n"
-	"		axis = \"vertical\", -- \"vertical\" side by side, \"horizontal\" stacked\n"
-	"		max = 4,           -- windows past this open floating\n"
-	"	},\n"
-	"\n"
 	"	appearance = {\n"
 	"		wallpaper = { background = \"#282828\" },\n"
 	"		titlebar = { enabled = true, height = 28 },\n"
@@ -1229,7 +1171,6 @@ static const char config_example[] =
 	"		{ key = \"mod+Return\", spawn = { \"foot\" } },\n"
 	"		{ key = \"mod+q\", action = \"close\" },\n"
 	"		{ key = \"mod+f\", action = \"maximize\" },\n"
-	"		{ key = \"mod+space\", action = \"floating\" },\n"
 	"		{ key = \"mod+j\", action = \"focus_next\" },\n"
 	"		{ key = \"mod+k\", action = \"focus_prev\" },\n"
 	"		{ key = \"mod+shift+r\", action = \"reload\" }, -- re-read this file\n"

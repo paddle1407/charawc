@@ -16,25 +16,6 @@ struct ring {
 	uint32_t focused, unfocused;
 };
 
-/* How new windows are placed on a workspace. */
-enum layout_mode {
-	LAYOUT_FLOATING,
-	LAYOUT_SPLIT,  /* each new window halves the previous one */
-	LAYOUT_QUAD,   /* fills top row, then the bottom row */
-};
-
-/* Axis of every split. VERTICAL puts windows side by side. */
-enum split_axis {
-	SPLIT_VERTICAL,
-	SPLIT_HORIZONTAL,
-};
-
-struct layout {
-	enum layout_mode mode;
-	enum split_axis  axis;
-	unsigned         max;  /* extra windows open floating */
-};
-
 struct values {
 	uint32_t mod;
 	bool     raise_maximized_on_click;
@@ -47,7 +28,6 @@ struct values {
 
 struct client {
 	struct wl_list    link;       /* wm.clients: creation order */
-	struct wl_list    tile_link;  /* wm.tiles: tiling order, tiled windows only */
 	struct swc_window *win;
 	struct screen     *scr;
 
@@ -55,10 +35,10 @@ struct client {
 	char     name[CHARA_NAME_MAX];     /* rule-assigned name, or empty */
 	unsigned ordinal;                  /* nth window using that name */
 
-	bool visible, fullscreen, maximized, tiled, titlebar, movable, resizable;
+	bool visible, fullscreen, maximized, titlebar, movable, resizable;
 	uint64_t minimized; /* zero when normal, otherwise most-recent order */
 
-	/* Floating geometry, kept while the window is tiled. */
+	/* Where the window sits, and how big it is. */
 	int32_t  x, y;
 	uint32_t width, height;
 	uint8_t  ws;
@@ -100,7 +80,6 @@ struct rule {
 	uint32_t width, height;
 	bool     has_pos, center;
 	bool     has_titlebar, titlebar;
-	bool     has_floating, floating;
 	bool     movable, resizable;
 };
 
@@ -133,7 +112,7 @@ struct wm {
 	struct wl_display    *dpy;
 	struct wl_event_loop *loop;
 
-	struct wl_list clients, tiles, screens, rules;
+	struct wl_list clients, screens, rules;
 
 	struct screen *scr;   /* monitor under the pointer */
 	struct client *cur;   /* focused window */

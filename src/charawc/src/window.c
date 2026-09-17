@@ -228,7 +228,6 @@ chara_ws_go_to(struct screen *s, uint8_t ws)
 	if (s->scr)
 		swc_workspace_set_active(s->scr, ws);
 	chara_sync_windows();
-	chara_layout_apply(s, ws);
 	chara_focus(first_on(s));
 }
 
@@ -244,9 +243,8 @@ chara_ws_move_to(uint8_t ws, struct client *c)
 	c->ws = ws;
 	swc_window_set_workspace(c->win, ws);
 	chara_sync_windows();
+	(void)from;
 	if (c->scr) {
-		chara_layout_apply(c->scr, from);
-		chara_layout_apply(c->scr, ws);
 		if (wm.cur == c)
 			chara_focus(first_on(c->scr));
 	}
@@ -277,8 +275,6 @@ chara_update_mode_geometry(struct client *c)
 		g.width = g.width > (uint32_t)(2 * side) ? g.width - 2 * side : 1;
 		g.height = g.height > (uint32_t)(top + side) ? g.height - top - side : 1;
 		swc_window_set_geometry(c->win, &g);
-	} else if (c->tiled) {
-		chara_layout_apply(s, c->ws);
 	}
 }
 
@@ -287,12 +283,10 @@ static void
 restore_mode(struct client *c)
 {
 	if (c->maximized) {
-		if (!c->tiled)
-			swc_window_set_tiled(c->win);
-		chara_update_mode_geometry(c);
-	} else if (c->tiled) {
+		/* Tiled mode stops the client drawing a resizable frame for a
+		 * window it does not control the size of. */
 		swc_window_set_tiled(c->win);
-		chara_layout_apply(c->scr, c->ws);
+		chara_update_mode_geometry(c);
 	} else {
 		swc_window_set_stacked(c->win);
 		struct swc_rectangle g = { c->x, c->y, c->width, c->height };
@@ -313,12 +307,10 @@ chara_set_fullscreen(struct client *c, bool fullscreen, struct swc_screen *on)
 			c->scr = s;
 		swc_window_set_fullscreen(c->win, c->scr ? c->scr->scr : NULL);
 	} else {
-		/* A client leaving fullscreen goes back to maximized or tiled if
-		 * that is where it came from, not to a bare floating window. */
+		/* A client leaving fullscreen goes back to maximized if that is
+		 * where it came from, not to a bare window. */
 		restore_mode(c);
 	}
-	if (c->scr && !c->maximized)
-		chara_layout_apply(c->scr, c->ws);
 	chara_decorate(c, wm.cur == c);
 	return true;
 }
@@ -344,8 +336,6 @@ chara_minimize(struct client *c)
 	c->minimized = ++wm.minimize_order;
 	swc_window_set_minimized(c->win, true);
 	chara_sync_windows();
-	if (c->scr)
-		chara_layout_apply(c->scr, c->ws);
 	if (wm.cur == c) {
 		if (c->scr && c->scr->focus == c)
 			c->scr->focus = NULL;
@@ -374,8 +364,6 @@ chara_restore(struct client *c)
 		c->ws = c->scr->ws;
 	swc_window_set_workspace(c->win, c->ws);
 	chara_sync_windows();
-	if (c->scr)
-		chara_layout_apply(c->scr, c->ws);
 	chara_focus(c);
 }
 
@@ -403,10 +391,7 @@ apply_rule(struct client *c)
 	c->resizable = match->resizable;
 	if (match->has_titlebar)
 		c->titlebar = match->titlebar;
-	if (match->has_floating && match->floating)
-		chara_layout_set_floating(c, true);
-
-	if (c->tiled || c->fullscreen || c->maximized)
+	if (c->fullscreen || c->maximized)
 		return;
 
 	struct swc_rectangle g = { c->x, c->y, c->width, c->height };
@@ -473,16 +458,11 @@ on_destroy(void *data)
 	if (wm.cur == c)
 		wm.cur = NULL;
 
-	uint8_t ws = c->ws;
-	if (c->tiled)
-		wl_list_remove(&c->tile_link);
 	wl_list_remove(&c->link);
 	free(c);
 
-	if (s) {
-		chara_layout_apply(s, ws);
+	if (s)
 		chara_focus(first_on(s));
-	}
 }
 
 static void
@@ -542,13 +522,17 @@ on_request_fullscreen(void *data, bool fullscreen, struct swc_screen *screen)
 	chara_set_fullscreen(data, fullscreen, screen);
 }
 
-/* A tiled window asking to be dragged becomes floating first. */
+/*
+ * A maximized window is in swc's tiled mode, which its own move and resize
+ * interactions refuse to act on, so dragging one gives up being maximized
+ * first.
+ */
 static void
 on_request_move(void *data)
 {
 	struct client *c = data;
 	if (c->movable)
-		chara_layout_set_floating(c, true);
+		chara_set_maximized(c, false);
 }
 
 static void
@@ -556,7 +540,7 @@ on_request_resize(void *data)
 {
 	struct client *c = data;
 	if (c->resizable)
-		chara_layout_set_floating(c, true);
+		chara_set_maximized(c, false);
 }
 
 static const struct swc_window_handler win_handler = {
@@ -601,21 +585,17 @@ chara_new_window(struct swc_window *win)
 	swc_window_set_handler(win, &win_handler, c);
 	swc_window_set_workspace(win, c->ws);
 
-	if (!chara_layout_admit(c)) {
-		/* Floating windows open in the middle of the active monitor. */
-		swc_window_set_stacked(c->win);
-		if (s && s->scr) {
-			struct swc_rectangle area = s->scr->usable_geometry;
-			c->x = area.x + ((int32_t)area.width - (int32_t)c->width) / 2;
-			c->y = area.y + ((int32_t)area.height - (int32_t)c->height) / 2;
-		}
-		struct swc_rectangle g = { c->x, c->y, c->width, c->height };
-		swc_window_set_geometry(win, &g);
+	/* Windows open in the middle of the active monitor. */
+	swc_window_set_stacked(c->win);
+	if (s && s->scr) {
+		struct swc_rectangle area = s->scr->usable_geometry;
+		c->x = area.x + ((int32_t)area.width - (int32_t)c->width) / 2;
+		c->y = area.y + ((int32_t)area.height - (int32_t)c->height) / 2;
 	}
+	struct swc_rectangle g = { c->x, c->y, c->width, c->height };
+	swc_window_set_geometry(win, &g);
 
 	apply_rule(c);
-	if (s)
-		chara_layout_apply(s, c->ws);
 	swc_window_show(win);
 	chara_focus(c);
 }
@@ -642,7 +622,7 @@ move_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 	}
 	if (!c || !c->movable || c->fullscreen)
 		return;
-	chara_layout_set_floating(c, true);
+	chara_set_maximized(c, false);
 	wm.grab = (struct grab){ .active = true, .resize = false, .client = c };
 	swc_window_begin_move(c->win);
 }
@@ -667,7 +647,6 @@ resize_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 	}
 	if (!c || !c->resizable || c->fullscreen)
 		return;
-	chara_layout_set_floating(c, true);
 	chara_set_maximized(c, false);
 	wm.grab = (struct grab){ .active = true, .resize = true, .client = c };
 	swc_window_begin_resize(c->win, SWC_WINDOW_EDGE_AUTO);
@@ -698,13 +677,9 @@ chara_action_run(const struct action *a)
 			argv[argc++] = wm.cur ? idbuf : (char *)"focused";
 		}
 	}
-	if (a->text) {
-		argv[argc++] = a->text;
-	} else {
-		for (unsigned i = 0; i < a->argc && i < 4; ++i) {
-			snprintf(numbers[i], sizeof(numbers[i]), "%d", a->args[i]);
-			argv[argc++] = numbers[i];
-		}
+	for (unsigned i = 0; i < a->argc && i < 4; ++i) {
+		snprintf(numbers[i], sizeof(numbers[i]), "%d", a->args[i]);
+		argv[argc++] = numbers[i];
 	}
 	argv[argc] = NULL;
 	status result = chara_ipc_dispatch(cmd, argc, argv);

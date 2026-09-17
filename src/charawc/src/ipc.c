@@ -23,7 +23,6 @@ const struct command commands[cmd_last] = {
 	[cmd_maximize]         = { "maximize", cmd_maximize, 0, true, "<window>" },
 	[cmd_minimize]         = { "minimize", cmd_minimize, 0, true, "<window>" },
 	[cmd_restore]          = { "restore", cmd_restore, 0, true, "[window]" },
-	[cmd_floating]         = { "floating", cmd_floating, 0, true, "<window>" },
 	[cmd_hide]             = { "hide", cmd_hide, 0, true, "<window>" },
 	[cmd_show]             = { "show", cmd_show, 0, true, "<window>" },
 	[cmd_raise]            = { "raise", cmd_raise, 0, true, "<window>" },
@@ -35,9 +34,6 @@ const struct command commands[cmd_last] = {
 	[cmd_unfocus]          = { "unfocus", cmd_unfocus, 0, false, "" },
 	[cmd_workspace]        = { "workspace", cmd_workspace, 1, false, "<1-9>" },
 	[cmd_move_workspace]   = { "move_workspace", cmd_move_workspace, 1, true, "<window> <1-9>" },
-	[cmd_layout]           = { "layout", cmd_layout, 1, false, "floating|split|quad" },
-	[cmd_layout_axis]      = { "layout_axis", cmd_layout_axis, 1, false, "vertical|horizontal" },
-	[cmd_layout_max]       = { "layout_max", cmd_layout_max, 1, false, "<1-16>" },
 	[cmd_get_geometry]     = { "get_geometry", cmd_get_geometry, 0, true, "<window>" },
 	[cmd_get_pid]          = { "get_pid", cmd_get_pid, 0, true, "<window>" },
 	[cmd_get_title]        = { "get_title", cmd_get_title, 0, true, "<window>" },
@@ -45,7 +41,6 @@ const struct command commands[cmd_last] = {
 	[cmd_get_id]           = { "get_id", cmd_get_id, 0, true, "<window>" },
 	[cmd_get_focus]        = { "get_focus", cmd_get_focus, 0, false, "" },
 	[cmd_get_workspace]    = { "get_workspace", cmd_get_workspace, 0, false, "" },
-	[cmd_get_layout]       = { "get_layout", cmd_get_layout, 0, false, "" },
 	[cmd_get_screen_geometry] = { "get_screen_geometry", cmd_get_screen_geometry, 0, false, "" },
 	[cmd_get_cursor_position] = { "get_cursor_position", cmd_get_cursor_position, 0, false, "" },
 	[cmd_list_windows]     = { "list_windows", cmd_list_windows, 0, false, "" },
@@ -90,12 +85,10 @@ number(const char *text, int32_t min, int32_t max, int32_t *out)
 	return true;
 }
 
-/* Floating windows keep their own geometry; tiled ones are laid out. */
+/* A window keeps its own geometry unless it is fullscreen or maximized. */
 static status
 place(struct client *c, struct swc_rectangle g)
 {
-	if (c->tiled)
-		return fail("window is tiled; use 'floating' first");
 	if (c->fullscreen || c->maximized)
 		return fail("window is fullscreen or maximized");
 	if (g.width < 1 || g.height < 1)
@@ -136,13 +129,11 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		return fail("usage: %s %s", cmd->name, cmd->usage);
 
 	/* Numeric arguments, when the command takes them. */
-	if (cmd->command != cmd_layout && cmd->command != cmd_layout_axis) {
+	{
 		for (int i = 0; i < cmd->argc && i < 4; ++i) {
 			int32_t min = -32768, max = 32767;
 			if (cmd->command == cmd_workspace || cmd->command == cmd_move_workspace)
 				min = 1, max = CHARA_WORKSPACES;
-			else if (cmd->command == cmd_layout_max)
-				min = 1, max = 16;
 			else if (cmd->command == cmd_resize_absolute ||
 			         (cmd->command == cmd_teleport && i >= 2))
 				min = 1, max = 32768;
@@ -199,9 +190,6 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 	case cmd_restore:
 		chara_restore(c);
 		return ok("");
-	case cmd_floating:
-		chara_layout_set_floating(c, c->tiled);
-		return ok("%s", c->tiled ? "tiled" : "floating");
 	case cmd_hide:
 		swc_window_hide(c->win);
 		c->visible = false;
@@ -237,27 +225,6 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 	case cmd_move_workspace:
 		chara_ws_move_to((uint8_t)a[0], c);
 		return ok("");
-	case cmd_layout: {
-		const char *mode = argv[first];
-		if (!strcmp(mode, "floating")) config.layout.mode = LAYOUT_FLOATING;
-		else if (!strcmp(mode, "split")) config.layout.mode = LAYOUT_SPLIT;
-		else if (!strcmp(mode, "quad")) config.layout.mode = LAYOUT_QUAD;
-		else return fail("usage: layout %s", cmd->usage);
-		chara_layout_all();
-		return ok("");
-	}
-	case cmd_layout_axis: {
-		const char *axis = argv[first];
-		if (!strcmp(axis, "vertical")) config.layout.axis = SPLIT_VERTICAL;
-		else if (!strcmp(axis, "horizontal")) config.layout.axis = SPLIT_HORIZONTAL;
-		else return fail("usage: layout_axis %s", cmd->usage);
-		chara_layout_all();
-		return ok("");
-	}
-	case cmd_layout_max:
-		config.layout.max = (unsigned)a[0];
-		chara_layout_all();
-		return ok("");
 	case cmd_get_geometry:
 		g = geometry_of(c);
 		return ok("%d %d %u %u", g.x, g.y, g.width, g.height);
@@ -275,12 +242,6 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		return ok("%s", label);
 	case cmd_get_workspace:
 		return ok("%u", chara_active_ws());
-	case cmd_get_layout: {
-		static const char *const modes[] = { "floating", "split", "quad" };
-		return ok("%s %s %u", modes[config.layout.mode],
-		          config.layout.axis == SPLIT_VERTICAL ? "vertical" : "horizontal",
-		          config.layout.max);
-	}
 	case cmd_get_screen_geometry: {
 		struct screen *s = chara_active_screen();
 		if (!s)
@@ -301,9 +262,8 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 			chara_client_label(other, label, sizeof(label));
 			g = geometry_of(other);
 			int n = snprintf(s.msg + o, sizeof(s.msg) - o,
-			    "%s%s\t%u\t%s\t%d %d %u %u\t%s\t%s",
+			    "%s%s\t%u\t%d %d %u %u\t%s\t%s",
 			    o ? "\n" : "", label, other->ws,
-			    other->tiled ? "tiled" : "floating",
 			    g.x, g.y, g.width, g.height,
 			    other->win->app_id ? other->win->app_id : "-",
 			    other->win->title ? other->win->title : "-");

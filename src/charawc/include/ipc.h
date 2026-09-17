@@ -10,16 +10,14 @@ enum cmd {
 	cmd_teleport, cmd_center,
 	/* state */
 	cmd_fullscreen, cmd_maximize, cmd_minimize, cmd_restore,
-	cmd_floating, cmd_hide, cmd_show, cmd_raise, cmd_lower, cmd_close,
+	cmd_hide, cmd_show, cmd_raise, cmd_lower, cmd_close,
 	/* focus */
 	cmd_focus, cmd_focus_next, cmd_focus_prev, cmd_unfocus,
 	/* workspaces */
 	cmd_workspace, cmd_move_workspace,
-	/* layout */
-	cmd_layout, cmd_layout_axis, cmd_layout_max,
 	/* queries */
 	cmd_get_geometry, cmd_get_pid, cmd_get_title, cmd_get_app_id,
-	cmd_get_id, cmd_get_focus, cmd_get_workspace, cmd_get_layout,
+	cmd_get_id, cmd_get_focus, cmd_get_workspace,
 	cmd_get_screen_geometry, cmd_get_cursor_position,
 	cmd_list_windows, cmd_list_monitors,
 	/* session */

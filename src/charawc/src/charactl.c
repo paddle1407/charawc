@@ -35,7 +35,7 @@ usage(FILE *out, const char *name)
 	    "rule (term, term:2), an automatic id (#4), or 'focused'.\n\n"
 	    "  %s focus term\n"
 	    "  %s move #4 40 0\n"
-	    "  %s layout quad\n"
+	    "  %s maximize term\n"
 	    "  %s list_windows\n\n"
 	    "See CONFIG.md for the full command list.\n",
 	    name, name, name, name, name);

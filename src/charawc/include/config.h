@@ -12,7 +12,6 @@ struct action {
 	unsigned argc;
 	int32_t args[4];
 	char *selector;   /* optional window selector, or NULL */
-	char *text;       /* optional string argument, or NULL */
 };
 
 struct binding {
@@ -43,7 +42,6 @@ struct bar_config {
 
 struct config {
 	struct values values;
-	struct layout layout;
 	struct decor *decoration;
 	struct wl_list bindings, rules, exec_once, exec, monitors;
 	char *cursor_theme;
@@ -96,13 +94,6 @@ int32_t chara_border_width(void);                    /* every ring, one side */
 int32_t chara_titlebar_height(const struct client *); /* 0 without a titlebar */
 void chara_undecorate(struct client *);
 void chara_apply_border(struct client *, bool focused);
-
-/* layout.c */
-void chara_layout_apply(struct screen *, uint8_t ws);
-void chara_layout_all(void);
-bool chara_layout_admit(struct client *); /* true when the window is tiled */
-void chara_layout_drop(struct client *);
-void chara_layout_set_floating(struct client *, bool floating);
 
 /* window.c */
 void chara_focus(struct client *);

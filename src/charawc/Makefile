@@ -20,7 +20,7 @@ CPPFLAGS   += -Iinclude $(shell $(PKG_CONFIG) --cflags $(PKGS)) $(EXTRA_CPPFLAGS
 LDLIBS     += $(shell $(PKG_CONFIG) --libs $(PKGS)) -lm
 LDFLAGS    += $(EXTRA_LDFLAGS)
 
-SRC   = src/charawc.c src/window.c src/layout.c src/border.c src/ipc.c \
+SRC   = src/charawc.c src/window.c src/border.c src/ipc.c \
         src/config.c src/bindings.c src/startup.c src/wallpaper.c src/log.c
 HDR   = $(wildcard include/*.h)
 
