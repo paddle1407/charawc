@@ -1,102 +1,122 @@
 # charaWC
 
-A small Wayland compositor built on [neuswc](https://github.com/paddle1407/neuswc)
-and [neuwld](https://github.com/paddle1407/neuwld). Windows float or tile,
-everything is configured from one Lua file, and a control client drives the
-running session from the shell.
+A small Wayland compositor for Linux, built on
+[neuswc](https://github.com/paddle1407/neuswc) and
+[neuwld](https://github.com/paddle1407/neuwld).
 
-See [CONFIG.md](CONFIG.md) for configuration and installation.
+- Windows float, split or tile in quads, switched live.
+- One Lua configuration file, reloaded in place with Super+Shift+R.
+- `charactl`, a control client that drives the running session from the shell.
+- `charabar`, a status bar that reads the same configuration file.
 
-## Getting the source
+Configuration is documented in [CONFIG.md](CONFIG.md).
 
-The three subprojects under `src/` are git submodules, so clone recursively:
+## Dependencies
+
+Build tools: a C11 compiler, `make`, `meson`, `ninja`, `pkg-config`,
+`wayland-scanner` and `wayland-protocols`.
+
+Libraries:
+
+```
+wayland  pixman  libxkbcommon  libdrm  libinput  libudev
+libgbm  libEGL  libGLESv2  libXcursor  fontconfig  freetype
+cairo  pangocairo  lua >= 5.2
+```
+
+On Void Linux:
+
+```sh
+xbps-install base-devel meson ninja pkg-config wayland-devel \
+    wayland-protocols pixman-devel libxkbcommon-devel libdrm-devel \
+    libinput-devel eudev-libudev-devel libgbm-devel libglvnd-devel \
+    libXcursor-devel fontconfig-devel freetype-devel cairo-devel \
+    pango-devel lua52-devel
+```
+
+At runtime charaWC also needs `elogind` or `systemd` to provide
+`XDG_RUNTIME_DIR`, `xkeyboard-config` for keymaps, and a terminal emulator —
+the starter configuration binds Super+Return to [foot](https://codeberg.org/dnkl/foot).
+
+Optional: `dbus` for desktop portals and a polkit agent, PipeWire for audio,
+`xorg-server-xwayland` for X11 clients, and libspng for PNG wallpapers.
+
+## Install
 
 ```sh
 git clone --recurse-submodules https://github.com/paddle1407/charawc.git
 cd charawc
+./build.sh
 ```
 
-Already cloned without them? Fetch them after the fact:
+`swc-launch` opens the DRM device and switches VTs, so it must be setuid root:
 
 ```sh
-git submodule update --init --recursive
+sudo install -m 4755 -o root -g root \
+    src/neuswc/build/launch/swc-launch /usr/local/bin/swc-launch
 ```
+
+Then install the binaries and session entry into `~/.config/charawc`:
+
+```sh
+./install.sh
+```
+
+To offer charaWC at login, copy the session entry where your display manager
+looks for it:
+
+```sh
+sudo cp ~/.config/charawc/charawc.desktop /usr/share/wayland-sessions/
+```
+
+`build.sh` stages everything into `./prefix`. Nothing is written outside this
+tree and `~/.config/charawc`, apart from the two commands above.
+
+## Running
+
+Log out and pick charaWC from your display manager, or start it from the build
+tree on a spare VT without installing:
+
+```sh
+./run.sh                 # /dev/tty2 by default
+TTY=/dev/tty3 ./run.sh
+```
+
+The configuration is checked before the VT switches, so a mistake in
+`config.lua` never leaves you on a blank console. Logs are written to
+`~/.config/charawc/log/`.
+
+A first run writes a starter `~/.config/charawc/config.lua`. Check it without
+starting a session with `charawc -C`.
+
+## Building without libspng
+
+libspng decodes PNG wallpapers and nothing else. `build.sh` uses a system
+`spng` when pkg-config finds one and the bundled submodule otherwise, so
+usually there is nothing to do. To drop it entirely:
+
+```sh
+PNG=0 ./build.sh
+```
+
+`appearance.wallpaper.background` is then used on its own, and a configured
+wallpaper path is ignored with a warning rather than failing the session.
+
+## Repository layout
 
 | path | what it is |
 | --- | --- |
-| `src/charawc` | the compositor and `charactl`, its control client |
+| `src/charawc` | the compositor and `charactl` |
 | `src/charabar` | the status bar |
 | `src/neuswc` | fork of [swc](https://github.com/michaelforney/swc), the compositor library |
 | `src/neuwld` | fork of [wld](https://github.com/michaelforney/wld), the drawing library |
-| `src/libspng` | [libspng](https://github.com/randy408/libspng), for PNG wallpapers — optional, see below |
+| `src/libspng` | [libspng](https://github.com/randy408/libspng), optional |
 
-## Building
-
-```sh
-./build.sh          # builds libspng, neuwld, neuswc, charaWC and charabar
-./install.sh        # copies the binaries into ~/.config/charawc
-```
-
-Everything is staged into `./prefix`; nothing is written outside this tree or
-`~/.config/charawc`. The one exception is `swc-launch`, which must be setuid
-root to open the DRM device and switch VTs — `build.sh` prints the command.
-
-To run straight from the build tree on a spare VT, without installing:
-
-```sh
-./run.sh
-```
-
-### Dependencies
-
-meson, ninja, `wayland-scanner`, wayland-protocols, Lua 5.2+, cairo,
-pangocairo, libdrm, libxkbcommon, libxcursor and the Mesa GBM/EGL/GLES2
-libraries. libspng is optional; everything else is required.
-
-### Wallpapers, and doing without libspng
-
-libspng decodes PNG wallpapers. It is the only thing it is used for, so there
-are three ways to get it, and you may already be done:
-
-- **Your distribution has it.** `build.sh` detects an installed `spng` through
-  pkg-config and uses it, leaving the bundled copy alone. Nothing to do.
-- **It doesn't, and you want PNG wallpapers.** The bundled submodule is built
-  automatically. Also nothing to do.
-- **You don't want the dependency at all:**
-
-  ```sh
-  PNG=0 ./build.sh
-  ```
-
-  libspng is then neither cloned nor built, and you can skip it when fetching
-  the submodules:
-
-  ```sh
-  git submodule update --init src/neuswc src/neuwld
-  ```
-
-A `PNG=0` build still draws a background — it just cannot decode an image, so
-`appearance.wallpaper.background` is used on its own:
-
-```lua
-appearance.wallpaper.background = 0xff1d2021
-```
-
-If a `config.lua` sets `appearance.wallpaper.path` on such a build, the path is
-ignored with a warning in the log rather than being treated as an error, so the
-session still starts.
-
-## Staying up to date
-
-Submodules are pinned to a known-good commit, so `git pull` alone can leave
-them behind:
-
-```sh
-git pull --recurse-submodules
-```
+The subprojects are git submodules pinned to known-good commits, so update with
+`git pull --recurse-submodules`.
 
 ## License
 
 charaWC is MIT licensed; see [LICENSE](LICENSE). The subprojects keep their own
-licenses — neuswc and neuwld are MIT, Copyright (c) Michael Forney; libspng
-is BSD 2-Clause, Copyright (c) Randy.
+licenses — neuswc and neuwld are MIT, Copyright (c) Michael Forney; libspng is
+BSD 2-Clause, Copyright (c) Randy.
