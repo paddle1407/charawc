@@ -38,6 +38,7 @@ struct client {
 	unsigned ordinal;                  /* nth window using that name */
 
 	bool visible, fullscreen, maximized, titlebar, movable, resizable;
+	bool pinned; /* kept above the other windows */
 	uint64_t minimized; /* zero when normal, otherwise most-recent order */
 
 	/* Where the window sits, and how big it is. */

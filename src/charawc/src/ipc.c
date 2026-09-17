@@ -27,6 +27,7 @@ const struct command commands[cmd_last] = {
 	[cmd_show]             = { "show", cmd_show, 0, true, "<window>" },
 	[cmd_raise]            = { "raise", cmd_raise, 0, true, "<window>" },
 	[cmd_lower]            = { "lower", cmd_lower, 0, true, "<window>" },
+	[cmd_pin]              = { "pin", cmd_pin, 0, true, "<window>" },
 	[cmd_close]            = { "close", cmd_close, 0, true, "<window>" },
 	[cmd_focus]            = { "focus", cmd_focus, 0, true, "<window>" },
 	[cmd_focus_next]       = { "focus_next", cmd_focus_next, 0, false, "" },
@@ -184,6 +185,9 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 	case cmd_maximize:
 		chara_set_maximized(c, !c->maximized);
 		return ok("");
+	case cmd_pin:
+		chara_set_pinned(c, !c->pinned);
+		return ok(c->pinned ? "pinned" : "unpinned");
 	case cmd_minimize:
 		chara_minimize(c);
 		return ok("");

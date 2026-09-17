@@ -10,7 +10,7 @@ enum cmd {
 	cmd_teleport, cmd_center,
 	/* state */
 	cmd_fullscreen, cmd_maximize, cmd_minimize, cmd_restore,
-	cmd_hide, cmd_show, cmd_raise, cmd_lower, cmd_close,
+	cmd_hide, cmd_show, cmd_raise, cmd_lower, cmd_pin, cmd_close,
 	/* focus */
 	cmd_focus, cmd_focus_next, cmd_focus_prev, cmd_unfocus,
 	/* workspaces */

@@ -108,6 +108,7 @@ void chara_minimize(struct client *);
 void chara_restore(struct client *);
 bool chara_set_fullscreen(struct client *, bool, struct swc_screen *);
 bool chara_set_maximized(struct client *, bool);
+bool chara_set_pinned(struct client *, bool);
 void chara_update_mode_geometry(struct client *);
 void chara_window_changed(struct client *); /* after an interactive drag */
 struct screen *chara_window_screen(const struct client *);

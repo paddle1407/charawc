@@ -163,6 +163,7 @@ chara_decorate(struct client *c, bool focused)
 		.titlebar = d->titlebar,
 	};
 	decor.titlebar.enabled = bar;
+	decor.titlebar.pinned = c->pinned;
 	decor.titlebar.hover_color = d->bar_hover;
 	decor.titlebar.pressed_color = d->bar_pressed;
 

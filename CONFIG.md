@@ -135,7 +135,7 @@ appearance = {
         height = 24,
         padding = 8,
         title_position = "center",        -- left, center, right
-        buttons = { "minimize", "fullscreen", "close" },
+        buttons = { "minimize", "fullscreen", "close", "pin" },
         buttons_style = "classic",        -- classic or circles
         buttons_position = "right",       -- left or right
         fullscreen_action = "maximize",   -- what the middle button does
@@ -146,12 +146,27 @@ appearance = {
 }
 ```
 
-`hover` and `pressed` apply to `buttons_style = "classic"` on focused windows.
-With `buttons_style = "circles"` the button colours come from `circle_colors`,
-which accepts `preset = "macos"` or individual `close`, `minimize` and
-`fullscreen` colours.
+Up to four buttons, in the order given. `hover` and `pressed` apply to
+`buttons_style = "classic"` on focused windows. With `buttons_style =
+"circles"` the button colours come from `circle_colors`, which accepts
+`preset = "macos"` or individual `close`, `minimize`, `fullscreen` and `pin`
+colours.
 
 Turn a titlebar off for one application with `titlebar = false` in a rule.
+
+### Pinning
+
+The `pin` button keeps a window above the others, fullscreen ones included --
+a terminal pinned over a fullscreen video stays visible instead of being
+buried. Click it again to let go. The button shows the state: the pin stays
+lit while it is holding, rather than only on hover.
+
+Pinning is about stacking, not workspaces: a pinned window still belongs to
+the workspace it is on. It also stays below the overlay layer, so a lock
+screen still covers it.
+
+`charactl pin <window>` toggles the same state, and `action = "pin"` binds it
+to a key.
 
 ## Window titles
 
@@ -410,6 +425,7 @@ charactl list_windows
 | `restore` | `[window]` — without one, the most recently minimized |
 | `hide`, `show` | `<window>` |
 | `raise`, `lower` | `<window>` |
+| `pin` | `<window>` — toggles staying above the others |
 | `close` | `<window>` |
 
 Geometry commands do not apply to a window that is fullscreen or maximized;

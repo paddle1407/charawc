@@ -544,7 +544,7 @@ parse_titlebar(lua_State *L, struct config *cfg, int index)
 	if (field(L, index, "circle_colors")) {
 		int t = lua_gettop(L);
 		FIELDS(L, t, "appearance.titlebar.circle_colors", "preset", "close",
-		       "minimize", "fullscreen");
+		       "minimize", "fullscreen", "pin");
 		if (field(L, t, "preset")) {
 			const char *s = string(L, -1, "appearance.titlebar.circle_colors.preset", false);
 			if (strcmp(s, "macos"))
@@ -552,20 +552,26 @@ parse_titlebar(lua_State *L, struct config *cfg, int index)
 			d->titlebar.close_color = 0xffff5f57;
 			d->titlebar.minimize_color = 0xffffbd2e;
 			d->titlebar.fullscreen_color = 0xff28c840;
+			/* macOS has no fourth light, so the pin gets a blue that sits
+			 * with the other three rather than competing with them. */
+			d->titlebar.pin_color = 0xff5ac8fa;
 			lua_pop(L, 1);
 		}
 		if (field(L, t, "close")) { d->titlebar.close_color = color(L, -1, "appearance.titlebar.circle_colors.close") | 0xff000000; lua_pop(L, 1); }
 		if (field(L, t, "minimize")) { d->titlebar.minimize_color = color(L, -1, "appearance.titlebar.circle_colors.minimize") | 0xff000000; lua_pop(L, 1); }
 		if (field(L, t, "fullscreen")) { d->titlebar.fullscreen_color = color(L, -1, "appearance.titlebar.circle_colors.fullscreen") | 0xff000000; lua_pop(L, 1); }
+		if (field(L, t, "pin")) { d->titlebar.pin_color = color(L, -1, "appearance.titlebar.circle_colors.pin") | 0xff000000; lua_pop(L, 1); }
 		lua_pop(L, 1);
 	}
 	if (field(L, index, "buttons")) {
-		static const char *const names[] = { "minimize", "fullscreen", "close", NULL };
+		static const char *const names[] = { "minimize", "fullscreen", "close",
+		                                     "pin", NULL };
 		static const enum swc_titlebar_action values[] = {
-			SWC_TITLEBAR_MINIMIZE, SWC_TITLEBAR_FULLSCREEN, SWC_TITLEBAR_CLOSE
+			SWC_TITLEBAR_MINIMIZE, SWC_TITLEBAR_FULLSCREEN, SWC_TITLEBAR_CLOSE,
+			SWC_TITLEBAR_PIN
 		};
 		int t = lua_gettop(L);
-		d->titlebar.count = array(L, t, "appearance.titlebar.buttons", 3);
+		d->titlebar.count = array(L, t, "appearance.titlebar.buttons", 4);
 		memset(d->titlebar.buttons, 0, sizeof(d->titlebar.buttons));
 		for (unsigned i = 0; i < d->titlebar.count; ++i) {
 			lua_rawgeti(L, t, i + 1);

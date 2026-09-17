@@ -374,6 +374,21 @@ chara_set_maximized(struct client *c, bool maximized)
 	return true;
 }
 
+/* Pinning is the window's own state, not a mode: it survives maximizing,
+ * fullscreen and workspace switches until it is turned off again. */
+bool
+chara_set_pinned(struct client *c, bool pinned)
+{
+	if (!c || c->pinned == pinned)
+		return false;
+
+	c->pinned = pinned;
+	swc_window_set_pinned(c->win, pinned);
+	/* Redraw: the pin button shows whether it is holding. */
+	chara_decorate(c, wm.cur == c);
+	return true;
+}
+
 void
 chara_minimize(struct client *c)
 {
@@ -537,6 +552,9 @@ on_titlebar_action(void *data, enum swc_titlebar_action action)
 		break;
 	case SWC_TITLEBAR_CLOSE:
 		swc_window_close(c->win);
+		break;
+	case SWC_TITLEBAR_PIN:
+		chara_set_pinned(c, !c->pinned);
 		break;
 	}
 }
