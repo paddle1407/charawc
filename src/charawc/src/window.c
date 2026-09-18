@@ -776,7 +776,7 @@ chara_new_window(struct swc_window *win)
 	if (!c)
 		_err(1, "couldn't allocate a window");
 
-	win->motion_throttle_ms = 1000 / 85;
+	win->motion_throttle_ms = CHARA_MOTION_THROTTLE_MS;
 	win->min_width = 1;
 	win->min_height = 1;
 
@@ -1042,8 +1042,22 @@ resize_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 void
 chara_bind_mouse(uint32_t mod)
 {
+	static uint32_t bound;
+	static bool have_bound;
+
+	/* swc_add_binding only ever appends, so the pair installed by the last
+	 * call has to go first. Without that a reload leaves another pair behind
+	 * every time, and since the oldest match wins, a changed mod would keep
+	 * moving and resizing windows under the modifier it replaced. Removing a
+	 * binding mid-press releases it, which is what the handlers expect. */
+	if (have_bound) {
+		swc_remove_binding(SWC_BINDING_BUTTON, bound, BTN_LEFT);
+		swc_remove_binding(SWC_BINDING_BUTTON, bound, BTN_RIGHT);
+	}
 	swc_add_binding(SWC_BINDING_BUTTON, mod, BTN_LEFT, move_handler, NULL);
 	swc_add_binding(SWC_BINDING_BUTTON, mod, BTN_RIGHT, resize_handler, NULL);
+	bound = mod;
+	have_bound = true;
 }
 
 /* --------------------------------------------------------------- actions */

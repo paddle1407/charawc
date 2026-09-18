@@ -14,8 +14,15 @@ CPPFLAGS   += -DCHARA_NO_PNG
 else
 PKGS       += spng
 endif
+# Cross-file inlining: the layout and border helpers are called once per window
+# from another translation unit. LTO=0 turns it off.
+LTO        ?= 1
+ifeq ($(LTO),1)
+LTOFLAGS   := $(shell $(CC) -flto=auto -E -x c /dev/null >/dev/null 2>&1 \
+                && echo -flto=auto || echo -flto)
+endif
 CFLAGS     += -std=c11 -D_GNU_SOURCE -DVERSION=\"$(VERSION)\" \
-              -Wall -Wextra -Wshadow -Wno-unused-parameter -O2
+              -Wall -Wextra -Wshadow -Wno-unused-parameter -O2 $(LTOFLAGS)
 CPPFLAGS   += -Iinclude $(shell $(PKG_CONFIG) --cflags $(PKGS)) $(EXTRA_CPPFLAGS)
 LDLIBS     += $(shell $(PKG_CONFIG) --libs $(PKGS)) -lm
 LDFLAGS    += $(EXTRA_LDFLAGS)

@@ -484,7 +484,11 @@ struct connection {
 
 static int listen_fd = -1;
 static struct wl_event_source *listen_source;
+static struct wl_event_source *resume_timer;
 static struct wl_event_loop *event_loop;
+
+/* How long to stop accepting for when the process is out of descriptors. */
+#define IPC_BACKOFF_MS 1000
 
 static void
 connection_close(struct connection *conn)
@@ -567,17 +571,54 @@ connection_readable(int fd, uint32_t mask, void *data)
 }
 
 static int
+resume_accepting(void *data)
+{
+	(void)data;
+	if (listen_source)
+		wl_event_source_fd_update(listen_source, WL_EVENT_READABLE);
+	return 0;
+}
+
+/* A pending connection that cannot be accepted keeps the listening socket
+ * readable, so returning here would spin the event loop until a descriptor
+ * came free. Stop watching it for a moment instead. */
+static void
+back_off(void)
+{
+	if (!listen_source || !resume_timer)
+		return;
+	wl_event_source_fd_update(listen_source, 0);
+	wl_event_source_timer_update(resume_timer, IPC_BACKOFF_MS);
+}
+
+static int
 listener_readable(int fd, uint32_t mask, void *data)
 {
 	(void)mask, (void)data;
 
 	for (;;) {
 		int client = accept4(fd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
-		if (client < 0)
+		if (client < 0) {
+			switch (errno) {
+			case EAGAIN:
+#if EWOULDBLOCK != EAGAIN
+			case EWOULDBLOCK:
+#endif
+				break;   /* nothing else waiting */
+			case EINTR:
+			case ECONNABORTED:
+				continue; /* this one went away; try the next */
+			default:
+				_wrn("ipc: accept: %s", strerror(errno));
+				back_off();
+				break;
+			}
 			return 0;
+		}
 		struct connection *conn = calloc(1, sizeof(*conn));
 		if (!conn) {
 			close(client);
+			back_off();
 			return 0;
 		}
 		conn->fd = client;
@@ -586,6 +627,8 @@ listener_readable(int fd, uint32_t mask, void *data)
 		if (!conn->source) {
 			close(client);
 			free(conn);
+			back_off();
+			return 0;
 		}
 	}
 }
@@ -629,6 +672,9 @@ chara_ipc_init(struct wl_event_loop *loop)
 		listen_fd = -1;
 		return false;
 	}
+	resume_timer = wl_event_loop_add_timer(loop, resume_accepting, NULL);
+	if (!resume_timer)
+		_wrn("ipc: no timer; accepting will not back off under fd pressure");
 	_inf("ipc: listening on %s", path);
 	return true;
 }
@@ -638,10 +684,13 @@ chara_ipc_finish(void)
 {
 	if (listen_source)
 		wl_event_source_remove(listen_source);
+	if (resume_timer)
+		wl_event_source_remove(resume_timer);
 	if (listen_fd >= 0) {
 		close(listen_fd);
 		unlink(chara_socket_path());
 	}
 	listen_source = NULL;
+	resume_timer = NULL;
 	listen_fd = -1;
 }

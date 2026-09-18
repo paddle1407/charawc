@@ -830,6 +830,7 @@ chara_tiling_drop_at(struct client *c, int32_t x, int32_t y)
 {
 	struct screen *s = chara_screen_at(x, y);
 	struct client *over;
+	bool moved = false;
 
 	if (!c || !c->tiled || !s)
 		return false;
@@ -838,10 +839,11 @@ chara_tiling_drop_at(struct client *c, int32_t x, int32_t y)
 		 * workspace that monitor is showing. */
 		if (!move_to_screen(c, s))
 			return false;
+		moved = true;
 	}
 	over = chara_tiling_at(x, y, NULL);
 	if (!over || over == c)
-		return s != c->scr;   /* the monitor move on its own still counts */
+		return moved;   /* the monitor move on its own still counts */
 	swap_places(c, over);
 	chara_tiling_dirty(s, s->ws);
 	return true;

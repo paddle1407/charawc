@@ -19,7 +19,6 @@ struct ring {
 
 struct values {
 	uint32_t mod;
-	bool     raise_maximized_on_click;
 	/* Hovering a window brings it to the front, not just the keyboard. */
 	bool     raise_on_hover;
 	/* Honor the monitor a client names when it asks to go fullscreen,

@@ -173,12 +173,6 @@ advance(void *data)
 }
 
 bool
-chara_startup_pending(void)
-{
-	return initialized && (waiting || !wl_list_empty(&pending));
-}
-
-bool
 chara_startup_init(struct wl_event_loop *loop)
 {
 	wl_list_init(&pending);

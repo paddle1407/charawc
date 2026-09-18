@@ -291,7 +291,7 @@ default_bindings(struct config *cfg)
 	    !default_binding(cfg, "mod+shift+e", cmd_quit, 0, NULL) ||
 	    !default_binding(cfg, "mod+t", cmd_tile, 0, NULL) ||
 	    !default_binding(cfg, "mod+space", cmd_tile_layout_next, 0, NULL) ||
-	    !default_binding(cfg, "mod+Return", cmd_tile_promote, 0, NULL) ||
+	    !default_binding(cfg, "mod+o", cmd_tile_promote, 0, NULL) ||
 	    !default_binding(cfg, "mod+h", cmd_focus_left, 0, NULL) ||
 	    !default_binding(cfg, "mod+j", cmd_focus_down, 0, NULL) ||
 	    !default_binding(cfg, "mod+k", cmd_focus_up, 0, NULL) ||
@@ -1084,18 +1084,14 @@ parse(lua_State *L)
 	lua_call(L, 0, 1);
 
 	int root = lua_gettop(L);
-	FIELDS(L, root, "config", "mod", "raise_maximized_on_click",
-	       "raise_on_hover", "fullscreen_follows_client", "appearance", "bar",
-	       "tiling", "bindings", "rules", "exec_once", "exec", "monitors");
+	FIELDS(L, root, "config", "mod", "raise_on_hover",
+	       "fullscreen_follows_client", "appearance", "bar", "tiling",
+	       "bindings", "rules", "exec_once", "exec", "monitors");
 
 	if (field(L, root, "mod")) {
 		uint32_t key;
 		if (!chara_parse_key(string(L, -1, "mod", false), 0, &cfg->values.mod, &key, true))
 			luaL_error(L, "mod: expected modifier names such as logo or ctrl+alt");
-		lua_pop(L, 1);
-	}
-	if (field(L, root, "raise_maximized_on_click")) {
-		cfg->values.raise_maximized_on_click = boolean(L, -1, "raise_maximized_on_click");
 		lua_pop(L, 1);
 	}
 	if (field(L, root, "raise_on_hover")) {
@@ -1179,7 +1175,16 @@ chara_config_init(struct config *cfg)
 		.drag_swaps = true,
 	};
 	cfg->decoration = decor_create();
-	return cfg->values.title_format && cfg->decoration;
+	if (!cfg->values.title_format || !cfg->decoration) {
+		/* Leave nothing behind: a failed reload returns without finishing
+		 * the configuration it was building. */
+		free(cfg->values.title_format);
+		cfg->values.title_format = NULL;
+		decor_destroy(cfg->decoration);
+		cfg->decoration = NULL;
+		return false;
+	}
+	return true;
 }
 
 struct lua_budget {
@@ -1293,8 +1298,13 @@ chara_config_load(struct config *cfg, const char *path)
 
 	/* Image decoding has its own limits and sits outside the Lua budget, so
 	 * both checking and reloading validate the real PNG here. */
-	if (ok && cfg->wallpaper.path)
-		ok = chara_wallpaper_load(&cfg->wallpaper, cfg->wallpaper.path);
+	if (ok && cfg->wallpaper.path) {
+		/* On a reload the running configuration usually names the same
+		 * image; let it hand over what it already decoded. */
+		const struct wallpaper *reuse =
+		    cfg == &config ? NULL : &config.wallpaper;
+		ok = chara_wallpaper_load(&cfg->wallpaper, cfg->wallpaper.path, reuse);
+	}
 	return ok;
 }
 
@@ -1351,6 +1361,14 @@ chara_config_move(struct config *dst, struct config *src)
 		wl_list_insert_list(to[i], from[i]); /* re-points elements at dst */
 		wl_list_init(from[i]);
 	}
+	/* dst owns what src used to. Leaving the pointers behind would hand a
+	 * second owner to anything that finished src afterwards. */
+	src->values.title_format = NULL;
+	src->cursor_theme = NULL;
+	src->wallpaper.path = NULL;
+	src->wallpaper.pixels = NULL;
+	src->wallpaper.decoded = false;
+	src->decoration = NULL;
 }
 
 bool

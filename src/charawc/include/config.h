@@ -41,7 +41,6 @@ enum tile_insert {
 	TILE_INSERT_AFTER_FOCUS,
 	TILE_INSERT_END,
 	TILE_INSERT_START,
-	TILE_INSERT_MASTER,
 };
 
 struct tiling_config {
@@ -118,7 +117,6 @@ void chara_startup_command_free(struct startup_command *);
 bool chara_startup_init(struct wl_event_loop *);
 void chara_startup_finish(void);
 void chara_startup_run(struct config *);
-bool chara_startup_pending(void);
 void chara_child_exited(pid_t);
 
 /* tiling.c -- the glue between the layout engine and the compositor. The

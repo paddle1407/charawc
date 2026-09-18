@@ -25,10 +25,17 @@ const char *
 chara_socket_path(void)
 {
 	static char path[108];
-	const char *runtime, *display;
+	const char *runtime, *display, *override;
 
 	if (path[0])
 		return path;
+	/* charactl reads the same variable; listening elsewhere than it looks
+	 * would make the override unusable. */
+	override = getenv("CHARAWC_SOCKET");
+	if (override && *override) {
+		snprintf(path, sizeof(path), "%s", override);
+		return path;
+	}
 	runtime = getenv("XDG_RUNTIME_DIR");
 	display = getenv("WAYLAND_DISPLAY");
 	if (runtime && *runtime == '/')
@@ -105,7 +112,18 @@ static const struct {
 static void
 load_cursor_theme(void)
 {
+	static char *loaded_theme;
+	static int loaded_size;
+	static bool loaded;
 	int size = config.cursor_size > 0 ? config.cursor_size : 24;
+	const char *theme = config.cursor_theme;
+
+	/* Every shape is read from disk here, up to four names deep. A reload
+	 * that did not change the theme has nothing to re-read. */
+	if (loaded && size == loaded_size &&
+	    (theme == loaded_theme ||
+	     (theme && loaded_theme && strcmp(theme, loaded_theme) == 0)))
+		return;
 
 	for (size_t i = 0; i < sizeof(cursors) / sizeof(*cursors); ++i) {
 		XcursorImage *image = NULL;
@@ -129,6 +147,13 @@ load_cursor_theme(void)
 	char text[16];
 	snprintf(text, sizeof(text), "%d", size);
 	setenv("XCURSOR_SIZE", text, 1);
+
+	free(loaded_theme);
+	loaded_theme = theme ? strdup(theme) : NULL;
+	loaded_size = size;
+	/* Without the remembered name the next reload has to read it all again,
+	 * which is what this ran for; it is still correct. */
+	loaded = !theme || loaded_theme;
 }
 
 /* ------------------------------------------------------------ wallpaper */

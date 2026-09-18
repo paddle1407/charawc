@@ -16,9 +16,11 @@
  * configuration, and run.sh checks the configuration before switching VTs,
  * so it would leave the session refusing to start over a decorative setting. */
 bool
-chara_wallpaper_load(struct wallpaper *wallpaper, const char *path)
+chara_wallpaper_load(struct wallpaper *wallpaper, const char *path,
+                     const struct wallpaper *reuse)
 {
 	(void)wallpaper;
+	(void)reuse;
 	_wrn("wallpaper: built without PNG support, ignoring %s; "
 	     "using appearance.wallpaper.background", path);
 	return true;
@@ -28,8 +30,30 @@ chara_wallpaper_load(struct wallpaper *wallpaper, const char *path)
 
 #include <spng.h>
 
+/* Whether the pixels a previous load decoded came from this same file. */
+static bool
+same_file(const struct wallpaper *w, const char *path, const struct stat *st)
+{
+	return w && w->decoded && w->pixels && w->path && !strcmp(w->path, path) &&
+	       w->dev == st->st_dev && w->ino == st->st_ino &&
+	       w->size == st->st_size &&
+	       w->mtim.tv_sec == st->st_mtim.tv_sec &&
+	       w->mtim.tv_nsec == st->st_mtim.tv_nsec;
+}
+
+static void
+note_file(struct wallpaper *w, const struct stat *st)
+{
+	w->decoded = true;
+	w->dev = st->st_dev;
+	w->ino = st->st_ino;
+	w->size = st->st_size;
+	w->mtim = st->st_mtim;
+}
+
 bool
-chara_wallpaper_load(struct wallpaper *wallpaper, const char *path)
+chara_wallpaper_load(struct wallpaper *wallpaper, const char *path,
+                     const struct wallpaper *reuse)
 {
 	/* Avoid blocking on FIFOs/devices during a user-triggered reload. */
 	int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
@@ -43,6 +67,23 @@ chara_wallpaper_load(struct wallpaper *wallpaper, const char *path)
 		_wrn("wallpaper: expected a regular PNG file of at most 64 MiB: %s", path);
 		close(fd);
 		return false;
+	}
+	/* The same image as last time: copy what it decoded to rather than
+	 * decoding and premultiplying it all over again. */
+	if (same_file(reuse, path, &st)) {
+		size_t bytes = (size_t)reuse->width * reuse->height * 4;
+		uint32_t *copy = malloc(bytes);
+		if (copy) {
+			memcpy(copy, reuse->pixels, bytes);
+			free(wallpaper->pixels);
+			wallpaper->pixels = copy;
+			wallpaper->width = reuse->width;
+			wallpaper->height = reuse->height;
+			note_file(wallpaper, &st);
+			close(fd);
+			return true;
+		}
+		/* Out of memory for the copy; decoding may still fit. */
 	}
 	FILE *fp = fdopen(fd, "rb");
 	if (!fp) { close(fd); return false; }
@@ -87,6 +128,7 @@ chara_wallpaper_load(struct wallpaper *wallpaper, const char *path)
 	wallpaper->pixels = (uint32_t *)pixels;
 	wallpaper->width = header.width;
 	wallpaper->height = header.height;
+	note_file(wallpaper, &st);
 	pixels = NULL;
 	ok = true;
 done:
