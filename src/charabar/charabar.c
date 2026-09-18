@@ -1996,8 +1996,25 @@ static void toplevel_manager_finished(void *data,
 		struct zwlr_foreign_toplevel_manager_v1 *manager)
 {
 	(void)data;
+	/*
+	 * The handles go with the manager, the same way the workspace ones do.
+	 * Keeping them would leave the taskbar drawing windows that are gone and
+	 * click targets whose proxy can no longer carry a request.
+	 */
+	struct toplevel *toplevel = app.toplevels;
+	while (toplevel) {
+		struct toplevel *next = toplevel->next;
+		if (toplevel->proxy)
+			zwlr_foreign_toplevel_handle_v1_destroy(toplevel->proxy);
+		free(toplevel);
+		toplevel = next;
+	}
+	app.toplevels = NULL;
+	for (struct output *output = app.outputs; output; output = output->next)
+		output->hit_count = 0;
 	zwlr_foreign_toplevel_manager_v1_destroy(manager);
 	app.toplevel_manager = NULL;
+	draw_all();
 }
 
 static const struct zwlr_foreign_toplevel_manager_v1_listener toplevel_manager_listener = {
@@ -2308,6 +2325,48 @@ static void handle_signal(int signal_number)
 		stop_requested = 1;
 }
 
+/*
+ * How long the loop can sleep before a timed module is due. Waking on a fixed
+ * tick instead meant several wakeups a second on a bar whose shortest interval
+ * is measured in seconds, which is pure idle drain on a laptop.
+ *
+ * Capped, so that a clock stepped backwards parks the bar for a minute at
+ * worst; refresh_module notices the jump on the next wakeup either way.
+ */
+static int next_timeout_ms(time_t now, time_t last_clock, time_t last_cpu,
+		time_t last_memory, time_t last_network, time_t last_volume)
+{
+	const struct {
+		enum module_type type;
+		unsigned interval;
+		time_t last;
+	} timed[] = {
+		{ MODULE_CLOCK,   app.config.clock_interval,   last_clock },
+		{ MODULE_CPU,     app.config.cpu_interval,     last_cpu },
+		{ MODULE_MEMORY,  app.config.memory_interval,  last_memory },
+		{ MODULE_NETWORK, app.config.network_interval, last_network },
+	};
+	time_t wait = 60;
+
+	for (size_t i = 0; i < sizeof(timed) / sizeof(*timed); ++i) {
+		if (!module_enabled(timed[i].type) || timed[i].interval == 0)
+			continue;
+		time_t due = timed[i].last + (time_t)timed[i].interval;
+		time_t left = now >= due ? 0 : due - now;
+		if (left < wait)
+			wait = left;
+	}
+	/* A query already in flight is watched through its own descriptor. */
+	if (module_enabled(MODULE_VOLUME) && app.config.volume_interval > 0 &&
+	    app.volume_fd < 0 && app.volume_pid <= 0) {
+		time_t due = last_volume + (time_t)app.config.volume_interval;
+		time_t left = now >= due ? 0 : due - now;
+		if (left < wait)
+			wait = left;
+	}
+	return wait <= 0 ? 0 : (int)(wait * 1000);
+}
+
 static void cleanup_app(void)
 {
 	struct toplevel *toplevel = app.toplevels;
@@ -2430,7 +2489,9 @@ int main(int argc, char **argv)
 			if (errno != EAGAIN) break;
 			pollfds[0].events |= POLLOUT;
 		}
-		int result = poll(pollfds, nfds, 250);
+		int result = poll(pollfds, nfds,
+			next_timeout_ms(time(NULL), last_clock, last_cpu, last_memory,
+			                last_network, last_volume));
 		if (result < 0 && errno != EINTR)
 			break;
 		if (result > 0 && (pollfds[0].revents & (POLLERR | POLLHUP)))
