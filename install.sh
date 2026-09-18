@@ -42,6 +42,10 @@ for binary in src/charawc/charawc src/charawc/charactl src/charabar/charabar; do
 	fi
 done
 
+# Emptied rather than added to: $ORIGIN/lib is searched first, so a library
+# left behind by an earlier build (a bundled libspng that the system now
+# provides, say) would shadow the one meant to be used.
+rm -rf -- "$BUILT/lib"
 mkdir -p "$BUILT" "$BUILT/lib" "$CONFIG_DIR/log"
 install -m 755 "$ROOT/src/charawc/charawc"  "$BUILT/charawc"
 install -m 755 "$ROOT/src/charawc/charactl" "$BUILT/charactl"
