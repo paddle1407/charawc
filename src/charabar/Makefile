@@ -6,8 +6,13 @@ LUA_PKG ?= $(shell for p in lua5.4 lua-5.4 lua54 lua5.3 lua-5.3 lua53 lua5.2 lua
 BUILD := build
 LAYER_XML := ../neuswc/protocol/wlr-layer-shell-unstable-v1.xml
 TOPLEVEL_XML := ../neuswc/protocol/wlr-foreign-toplevel-management-unstable-v1.xml
-WORKSPACE_XML := /usr/share/wayland-protocols/staging/ext-workspace/ext-workspace-v1.xml
-XDG_XML := /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
+# Where the distribution keeps the shared protocol XML; asking pkg-config beats
+# assuming /usr/share.
+WL_PROTOCOLS := $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
+WORKSPACE_XML := $(WL_PROTOCOLS)/staging/ext-workspace/ext-workspace-v1.xml
+# charabar.c never speaks xdg-shell, but wlr-layer-shell's get_popup request
+# names xdg_popup, so the generated layer-shell code needs that interface.
+XDG_XML := $(WL_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml
 PROTOCOLS := layer-shell toplevel workspace xdg-shell
 GEN_HEADERS := $(addprefix $(BUILD)/,$(addsuffix .h,$(PROTOCOLS)))
 GEN_CODE := $(addprefix $(BUILD)/,$(addsuffix .c,$(PROTOCOLS)))

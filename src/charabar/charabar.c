@@ -417,6 +417,56 @@ static void config_instruction_hook(lua_State *L, lua_Debug *ar)
 		luaL_error(L, "configuration exceeded its execution limit");
 }
 
+/*
+ * Read the file the way charawc does rather than letting Lua open it: a FIFO
+ * or a device would block the bar forever with no timeout, a file being
+ * written would parse half a configuration, and loadfile would also accept
+ * precompiled bytecode, which is a much larger interpreter surface than the
+ * text this is meant to read.
+ */
+static char *config_snapshot(const char *path, size_t *length)
+{
+	int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+	struct stat st;
+	char *source;
+	size_t used = 0;
+
+	if (fd < 0)
+		return NULL;
+	if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+	    st.st_size > 4 * 1024 * 1024) {
+		fprintf(stderr, "charabar: %s: expected a regular config file of at "
+		                "most 4 MiB\n", path);
+		close(fd);
+		return NULL;
+	}
+	*length = (size_t)st.st_size;
+	if (!(source = malloc(*length + 1))) {
+		close(fd);
+		return NULL;
+	}
+	while (used < *length) {
+		ssize_t n = read(fd, source + used, *length - used);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		used += (size_t)n;
+	}
+	struct stat after;
+	bool stable = fstat(fd, &after) == 0 && after.st_size == st.st_size &&
+	              after.st_mtim.tv_sec == st.st_mtim.tv_sec &&
+	              after.st_mtim.tv_nsec == st.st_mtim.tv_nsec;
+	close(fd);
+	if (used != *length || !stable) {
+		fprintf(stderr, "charabar: %s: file changed while reading\n", path);
+		free(source);
+		return NULL;
+	}
+	source[*length] = '\0';
+	return source;
+}
+
 static bool config_load(const char *path, struct bar_config *config)
 {
 	static struct lua_budget budget;
@@ -442,7 +492,15 @@ static bool config_load(const char *path, struct bar_config *config)
 	lua_pushcfunction(L, lua_getenv_only);
 	lua_setfield(L, -2, "getenv");
 	lua_setglobal(L, "os");
-	if (luaL_loadfile(L, path) != LUA_OK || lua_pcall(L, 0, 1, 0) != LUA_OK) {
+	size_t length = 0;
+	char *source = config_snapshot(path, &length);
+	if (!source) {
+		lua_close(L);
+		return false;
+	}
+	int loaded = luaL_loadbufferx(L, source, length, path, "t");
+	free(source);
+	if (loaded != LUA_OK || lua_pcall(L, 0, 1, 0) != LUA_OK) {
 		fprintf(stderr, "charabar: %s\n", lua_tostring(L, -1));
 		lua_close(L);
 		return false;
@@ -2356,13 +2414,24 @@ static int next_timeout_ms(time_t now, time_t last_clock, time_t last_cpu,
 		if (left < wait)
 			wait = left;
 	}
-	/* A query already in flight is watched through its own descriptor. */
-	if (module_enabled(MODULE_VOLUME) && app.config.volume_interval > 0 &&
-	    app.volume_fd < 0 && app.volume_pid <= 0) {
-		time_t due = last_volume + (time_t)app.config.volume_interval;
-		time_t left = now >= due ? 0 : due - now;
-		if (left < wait)
-			wait = left;
+	if (module_enabled(MODULE_VOLUME)) {
+		time_t due;
+		time_t left;
+
+		if (app.volume_fd >= 0 || app.volume_pid > 0) {
+			/* A query is in flight. Its pipe wakes us when it answers, but
+			 * a wedged wpctl only answers to the timeout, so that has to
+			 * bound the sleep too. */
+			due = app.volume_started + VOLUME_TIMEOUT;
+			left = now >= due ? 0 : due - now;
+			if (left < wait)
+				wait = left;
+		} else if (app.config.volume_interval > 0) {
+			due = last_volume + (time_t)app.config.volume_interval;
+			left = now >= due ? 0 : due - now;
+			if (left < wait)
+				wait = left;
+		}
 	}
 	return wait <= 0 ? 0 : (int)(wait * 1000);
 }
