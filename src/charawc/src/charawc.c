@@ -176,7 +176,11 @@ apply_wallpaper(void)
 static void
 spawn_bar(void)
 {
-	char *argv[] = { (char *)"charabar", NULL };
+	/* charabar reads the same file, so it has to be told when the
+	 * compositor was started with -c; it defaults to the same path. */
+	char *argv[] = { (char *)"charabar", (char *)"-c", config_path, NULL };
+	if (!config_path)
+		argv[1] = NULL;
 	bar_pid = chara_spawn_process(argv, true);
 	if (bar_pid < 0)
 		bar_pid = 0;
@@ -246,11 +250,20 @@ reconcile(void)
 		if (!s && !wl_list_empty(&wm.screens))
 			s = wl_container_of(wm.screens.next, s, link);
 		if (s && s != from) {
+			uint8_t from_ws = c->ws;
+
 			chara_forget_focus(c, s);
 			c->scr = s;
+			/* And to the workspace that monitor is showing, as every other
+			 * monitor move does; keeping the old number leaves the window
+			 * laid out on a workspace that is not on screen. */
+			if (c->ws != s->ws) {
+				c->ws = s->ws;
+				swc_window_set_workspace(c->win, c->ws);
+			}
 			/* Its place in the old monitor's layout goes with the move;
 			 * it needs one in the new monitor's. */
-			chara_tiling_reseat(c, from, c->ws);
+			chara_tiling_reseat(c, from, from_ws);
 		}
 	}
 	chara_sync_windows();
@@ -280,8 +293,10 @@ on_scr_entered(void *data)
 	 * arrives on does not get to take the focus with it. */
 	if (wm.grab.active)
 		return;
+	/* The remembered window may since have been minimized or sent to
+	 * another workspace; chara_first_on applies that test and falls back. */
 	if (s->focus)
-		chara_focus(s->focus);
+		chara_focus(chara_first_on(s));
 }
 
 static void

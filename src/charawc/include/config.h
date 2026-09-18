@@ -187,6 +187,9 @@ void chara_apply_border(struct client *, bool focused);
 /* window.c */
 void chara_focus(struct client *);
 void chara_forget_focus(const struct client *, const struct screen *keep);
+/* The window a monitor should focus: its remembered one when that is still
+ * on its workspace, otherwise the first that is. */
+struct client *chara_first_on(struct screen *);
 void chara_action_run(const struct action *);
 void chara_stop(void);
 void chara_request_reload(void);

@@ -190,7 +190,10 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		const char *selector = argc > 0 ? argv[0] : NULL;
 		c = chara_lookup(selector);
 		first = argc > 0 ? 1 : 0;
-		if (!c && cmd->command != cmd_restore)
+		/* restore with nothing named falls back to the most recently
+		 * minimized window, so no focus is not an error there. A name that
+		 * resolves to nothing still is. */
+		if (!c && (selector || cmd->command != cmd_restore))
 			return fail("no such window: %s", selector ? selector : "focused");
 	}
 	int provided = argc - first;

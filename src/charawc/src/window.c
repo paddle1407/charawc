@@ -182,8 +182,8 @@ on_workspace(const struct client *c, const struct screen *s)
 	return c && !c->minimized && c->scr == s && c->ws == s->ws;
 }
 
-static struct client *
-first_on(struct screen *s)
+struct client *
+chara_first_on(struct screen *s)
 {
 	struct client *c;
 
@@ -258,7 +258,7 @@ chara_ws_go_to(struct screen *s, uint8_t ws)
 		swc_workspace_set_active(s->scr, ws);
 	chara_tiling_dirty(s, ws);
 	chara_sync_windows();
-	chara_focus(first_on(s));
+	chara_focus(chara_first_on(s));
 }
 
 void
@@ -285,7 +285,7 @@ chara_ws_move_to(uint8_t ws, struct client *c)
 		swc_window_raise(c->win);
 	if (c->scr) {
 		if (wm.cur == c)
-			chara_focus(first_on(c->scr));
+			chara_focus(chara_first_on(c->scr));
 	}
 }
 
@@ -410,8 +410,19 @@ chara_set_fullscreen(struct client *c, bool fullscreen, struct swc_screen *on)
 		if (!s)
 			s = c->scr;
 		if (s && s != c->scr) {
+			struct screen *from = c->scr;
+			uint8_t from_ws = c->ws;
+
 			chara_forget_focus(c, s);
 			c->scr = s;
+			/* The monitor it fills is the monitor it belongs to, and to
+			 * the workspace that monitor is showing. Without this it comes
+			 * out of fullscreen onto a workspace that is not on screen. */
+			if (c->ws != s->ws) {
+				c->ws = s->ws;
+				swc_window_set_workspace(c->win, c->ws);
+			}
+			chara_tiling_reseat(c, from, from_ws);
 		}
 		swc_window_set_fullscreen(c->win, c->scr ? c->scr->scr : NULL);
 	} else {
@@ -465,11 +476,11 @@ chara_minimize(struct client *c)
 	swc_window_set_minimized(c->win, true);
 	chara_tiling_dirty_client(c);
 	chara_sync_windows();
-	if (wm.cur == c) {
-		if (c->scr && c->scr->focus == c)
-			c->scr->focus = NULL;
-		chara_focus(c->scr ? first_on(c->scr) : NULL);
-	}
+	/* A window can be the remembered focus of more than the monitor it is
+	 * on, and a hidden one is not something to come back to on any of them. */
+	chara_forget_focus(c, NULL);
+	if (wm.cur == c)
+		chara_focus(c->scr ? chara_first_on(c->scr) : NULL);
 }
 
 void
@@ -489,9 +500,14 @@ chara_restore(struct client *c)
 
 	c->minimized = 0;
 	swc_window_set_minimized(c->win, false);
+	uint8_t from_ws = c->ws;
 	if (c->scr)
 		c->ws = c->scr->ws;
 	swc_window_set_workspace(c->win, c->ws);
+	/* Coming back on a different workspace means a place in that
+	 * workspace's order, not the one it kept from the old. */
+	if (c->ws != from_ws)
+		chara_tiling_reseat(c, c->scr, from_ws);
 	if (c->tiled)
 		chara_tiling_restore_mode(c);
 	chara_sync_windows();
@@ -622,7 +638,7 @@ on_destroy(void *data)
 	free(c);
 
 	if (s)
-		chara_focus(first_on(s));
+		chara_focus(chara_first_on(s));
 }
 
 static void
@@ -733,12 +749,16 @@ on_request_move(void *data)
 
 	if (!c->movable)
 		return;
-	chara_set_maximized(c, false);
-	/* Dragging a window's own titlebar is how you take it out of the tiling
+	/* Released first, and only then un-maximized: release_in_place refuses
+	 * to record a window that is wearing the whole monitor, and dropping
+	 * the maximize first would defeat that and lose the floating size.
+	 *
+	 * Dragging a window's own titlebar is how you take it out of the tiling
 	 * by hand: there is nowhere for a tiled window to be dragged to. swc
 	 * looks at the mode again once this returns, so the drag it asked for
 	 * begins straight away. */
 	chara_tiling_release_in_place(c);
+	chara_set_maximized(c, false);
 }
 
 static void
@@ -748,8 +768,8 @@ on_request_resize(void *data)
 
 	if (!c->resizable)
 		return;
-	chara_set_maximized(c, false);
 	chara_tiling_release_in_place(c);
+	chara_set_maximized(c, false);
 }
 
 static const struct swc_window_handler win_handler = {
