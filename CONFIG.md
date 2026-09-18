@@ -366,9 +366,9 @@ One rule per `app_id`.
 ```lua
 rules = {
     { app_id = "foot", id = "term" },
-    { app_id = "mpv", id = "video", floating = true, center = true,
+    { app_id = "mpv", id = "video", tiling = false, center = true,
       width = 1280, height = 720 },
-    { app_id = "pavucontrol", floating = true, titlebar = false,
+    { app_id = "pavucontrol", tiling = false, titlebar = false,
       movable = true, resizable = false },
 }
 ```
@@ -559,9 +559,10 @@ Available modules are `workspaces`, `window`, `taskbar`, `clock`, `cpu`,
 
 ### Module options
 
-Each module takes its own table. `interval` is in seconds, and `0` means the
-module is only refreshed when charabar is sent `SIGUSR1` -- useful for a
-volume module that a keybind already tells about every change.
+Each module takes its own table. `interval` is in seconds, from 1 to 3600.
+`volume` also accepts `0`, which stops it polling and refreshes it only when
+charabar is sent `SIGUSR1` -- useful when a keybind already tells it about
+every change. The other modules have no such mode and require at least 1.
 
 ```lua
 workspaces = { count = 9, format = "%n" },
