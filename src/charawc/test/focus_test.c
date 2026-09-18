@@ -54,13 +54,17 @@ bool swc_pointer_grab_begin(swc_pointer_motion_handler h, void *d) { return fals
 void swc_pointer_grab_end(void) {}
 void swc_window_set_tiled(struct swc_window *w) {}
 void swc_window_set_stacked(struct swc_window *w) {}
-void swc_window_set_pinned(struct swc_window *w, bool p) {}
+static bool pinned_state[4];
+void swc_window_set_pinned(struct swc_window *w, bool p)
+{ unsigned i = window_index(w); if (i < 4) pinned_state[i] = p; }
 void swc_window_set_minimized(struct swc_window *w, bool m) {}
 void swc_window_set_workspace(struct swc_window *w, uint32_t ws) {}
 void swc_window_show(struct swc_window *w) {}
 void swc_window_show_in_place(struct swc_window *w) {}
 void swc_window_hide(struct swc_window *w) {}
-void swc_window_raise(struct swc_window *w) {}
+static const struct swc_window *last_raised;
+static unsigned raise_count;
+void swc_window_raise(struct swc_window *w) { last_raised = w; ++raise_count; }
 void swc_window_focus(struct swc_window *w) {}
 void swc_window_close(struct swc_window *w) {}
 void swc_window_begin_move(struct swc_window *w) {}
@@ -133,6 +137,16 @@ setup(void)
 
 	memset(geometry, 0, sizeof(geometry));
 	memset(geometry_set, 0, sizeof(geometry_set));
+	memset(pinned_state, 0, sizeof(pinned_state));
+	last_raised = NULL;
+	raise_count = 0;
+	/* config is a zeroed global here, so the list head is only a list once
+	 * it has been initialised; the rules themselves are static. */
+	if (!config.rules.next)
+		wl_list_init(&config.rules);
+	while (!wl_list_empty(&config.rules))
+		wl_list_remove(config.rules.next);
+	config.tiling.enabled = true;
 
 	/* Tiling with no gaps, so the numbers below are the frame and nothing
 	 * else. A 2px ring and a 24px titlebar: 2 to the sides and the bottom,
@@ -422,6 +436,113 @@ test_untiling_restores_the_window(void)
 	check("and the orders close up behind it", b->tile_order == 0);
 }
 
+/*
+ * Monocle hands every window the same rectangle, so the only thing that
+ * decides what you can see is which one is on top. Focusing has to raise, or
+ * cycling through them changes nothing visible -- which is exactly what went
+ * wrong the first time.
+ */
+static void
+test_monocle_focus_raises(void)
+{
+	struct client *a, *b;
+
+	setup();
+	a = add_client(0, &screens[0]);
+	b = add_client(1, &screens[0]);
+	chara_tiling_set(a, true);
+	chara_tiling_set(b, true);
+	chara_tiling_set_layout(&screens[0], 1, TILE_MONOCLE);
+	chara_tiling_flush();
+	check("in monocle both windows fill the workspace",
+	      is_rect(0, 2, 26, 1916, 1052) && is_rect(1, 2, 26, 1916, 1052));
+
+	last_raised = NULL;
+	chara_focus(a);
+	check("focusing one brings it to the front", last_raised == a->win);
+	last_raised = NULL;
+	chara_focus(b);
+	check("and focusing the other brings that one", last_raised == b->win);
+
+	/* Outside monocle the windows are side by side, and raising on focus
+	 * would shuffle the stack for nothing. */
+	chara_tiling_set_layout(&screens[0], 1, TILE_COLUMNS);
+	chara_tiling_flush();
+	last_raised = NULL;
+	chara_focus(a);
+	check("in a layout that does not overlap, focus leaves the stack alone",
+	      last_raised == NULL);
+}
+
+static void
+test_monocle_cycles_with_the_directions(void)
+{
+	struct client *a, *b, *cc;
+
+	setup();
+	a = add_client(0, &screens[0]);
+	b = add_client(1, &screens[0]);
+	cc = add_client(2, &screens[0]);
+	chara_tiling_set(a, true);
+	chara_tiling_set(b, true);
+	chara_tiling_set(cc, true);
+	chara_tiling_set_layout(&screens[0], 1, TILE_MONOCLE);
+	chara_tiling_flush();
+	wm.scr = &screens[0];
+
+	chara_focus(a);
+	check("right steps to the next window in monocle",
+	      chara_focus_dir(TILE_RIGHT) && wm.cur == b);
+	check("and on to the one after", chara_focus_dir(TILE_DOWN) && wm.cur == cc);
+	check("the end wraps round to the start",
+	      chara_focus_dir(TILE_RIGHT) && wm.cur == a);
+	check("and left goes back the other way, wrapping too",
+	      chara_focus_dir(TILE_LEFT) && wm.cur == cc);
+}
+
+/*
+ * A launcher wants to be left out of the layout and kept above everything,
+ * fullscreen windows included. Both come from its rule.
+ */
+static void
+test_rule_can_float_and_pin(void)
+{
+	static struct rule rule;
+	struct client *c;
+
+	setup();
+	memset(&rule, 0, sizeof(rule));
+	snprintf(rule.app_id, sizeof(rule.app_id), "mylauncher");
+	snprintf(rule.name, sizeof(rule.name), "launcher");
+	rule.width = 500;
+	rule.height = 800;
+	rule.center = true;
+	rule.has_tiled = true;
+	rule.tiled = false;
+	rule.has_pinned = true;
+	rule.pinned = true;
+	wl_list_insert(config.rules.prev, &rule.link);
+	config.tiling.enabled = true;
+
+	windows[0].app_id = (char *)"mylauncher";
+	chara_new_window(&windows[0]);
+	chara_tiling_flush();
+	c = wm.cur;
+
+	check("a rule saying tiling = false keeps the window out of the layout",
+	      c && !c->tiled);
+	check("pinned = true puts it above everything", c && pinned_state[0]);
+	check("and its size and centring still apply",
+	      is_rect(0, 710, 140, 500, 800));
+
+	/* The window that opens next must not be affected by any of it. */
+	windows[1].app_id = NULL;
+	chara_new_window(&windows[1]);
+	chara_tiling_flush();
+	check("while an ordinary window still tiles",
+	      wm.cur && wm.cur->tiled && !pinned_state[1]);
+}
+
 int
 main(void)
 {
@@ -433,6 +554,9 @@ main(void)
 	test_tiling_survives_fullscreen();
 	test_tiling_swaps_and_resizes();
 	test_untiling_restores_the_window();
+	test_monocle_focus_raises();
+	test_monocle_cycles_with_the_directions();
+	test_rule_can_float_and_pin();
 	printf("\n%s\n", failures ? "FAILURES" : "all ok");
 	return failures ? 1 : 0;
 }
