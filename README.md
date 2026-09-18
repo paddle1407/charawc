@@ -5,6 +5,9 @@ A small Wayland compositor for Linux, built on
 [neuwld](https://github.com/paddle1407/neuwld).
 
 - Windows float, and are moved, resized and maximized from the keyboard or the mouse.
+- Tiling, when you want it: master and stack, columns, rows, grid or monocle,
+  per workspace, with gaps and fences you can drag. Floating stays a keystroke
+  away for the windows that want it.
 - One Lua configuration file, reloaded in place with Super+Shift+R.
 - `charactl`, a control client that drives the running session from the shell.
 - `charabar`, a status bar that reads the same configuration file.

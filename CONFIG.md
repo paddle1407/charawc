@@ -92,6 +92,127 @@ At startup there is no running configuration to fall back on, so:
 
 ---
 
+## Tiling
+
+Windows float by default. Turning tiling on makes new windows take a share of
+the workspace instead, and floating stays available either way: `tile` takes one
+window out of the tiling and puts it back, and a rule can keep an application
+out of it for good.
+
+```lua
+tiling = {
+    enabled = true,
+    layout = "master",    -- master, columns, rows, grid or monocle
+    gaps = { inner = 6, outer = 6 },
+    smart_gaps = true,    -- a workspace showing one window gets no gaps
+    master = { count = 1, ratio = 55, side = "left" },
+    resize_step = 40,     -- pixels a keyboard resize moves a fence
+    insert = "after_focus",
+}
+```
+
+`gaps` may also be a single number, which sets both.
+
+| Setting | |
+| --- | --- |
+| `enabled` | Whether new windows tile. Default `false`. |
+| `layout` | The layout every workspace starts on. Changed per workspace at runtime. |
+| `gaps.inner` | Between neighbouring windows. |
+| `gaps.outer` | Around the edge of the workspace. |
+| `smart_gaps` | Drop both when a workspace is showing one window. Default `true`. |
+| `master.count` | Windows in the master group. |
+| `master.ratio` | The master group's share, as a percentage from 5 to 95. |
+| `master.side` | `left`, `right`, `top` or `bottom`. |
+| `resize_step` | Pixels a `tile_resize_*` with no argument moves a fence. |
+| `insert` | Where a new window lands: `after_focus`, `end` or `start`. |
+| `drag_swaps` | Whether a mod+drag over another tiled window trades their places. Default `true`. |
+| `focus_follows_relayout` | Whether a window sliding under a still pointer may take the focus. Default `false`. |
+
+Each monitor's workspaces carry their own layout, master count and master
+ratio, so two workspaces on one monitor can be arranged differently and
+switching between them switches the arrangement too. Reloading puts them all
+back to what this section says.
+
+### The layouts
+
+```
+ master             columns            rows
++------+------+    +----+----+----+   +-------------+
+|      |  2   |    |    |    |    |   |      1      |
+|      +------+    | 1  | 2  | 3  |   +-------------+
+|  1   |  3   |    |    |    |    |   |      2      |
+|      +------+    |    |    |    |   +-------------+
+|      |  4   |    |    |    |    |   |      3      |
++------+------+    +----+----+----+   +-------------+
+
+ grid               monocle
++------+------+    +-------------+
+|  1   |  2   |    |             |
++------+------+    |      1      |   every window gets the whole
+|  3   |  4   |    |             |   workspace, the focused one on top
++------+------+    +-------------+
+```
+
+**master** is a master group beside a stack of everything else. `master.count`
+windows are in the group, `master.ratio` is its share, and `master.side` decides
+which edge it takes. With nothing in the stack the masters share the whole
+workspace.
+
+**columns** and **rows** give every window a full-height column or a full-width
+row.
+
+**grid** is as square as the count allows, filling rows from the top. An
+incomplete last row stretches to fill.
+
+**monocle** gives every window the whole workspace, one on top of another.
+Focusing a window brings it to the front, so `focus_next` and `focus_prev` step
+through them; so do `focus_left` and the rest, which have nothing to point at in
+monocle and step through the order instead, wrapping at both ends.
+
+### Sizes
+
+Every window keeps its own share of whatever group it lands in, so opening and
+closing windows never resizes the ones that stay. Resizing acts on the fence
+between two windows: growing one takes the pixels from its neighbour and leaves
+everything else where it was. A window that tells charaWC it has a minimum size
+is not squeezed past it -- the fence stops there instead.
+
+`tile_equalize` puts every window on the workspace back on equal terms.
+
+### Using it
+
+| | |
+| --- | --- |
+| `tile` | Take a window out of the tiling, or put it back. |
+| `focus_left` `focus_right` `focus_up` `focus_down` | Focus the window that way, carrying on to the next monitor when there is none on this one. Works for floating windows too. |
+| `tile_move_left` and so on | Trade places with the window that way, or send it to the next monitor. |
+| `tile_resize_left` and so on | Move the fence on that side outward, by `resize_step` or by a given number of pixels. |
+| `tile_promote` | Send a window to the master slot, or swap it back. |
+| `tile_swap` | Trade places with the focused window. |
+| `tile_equalize` | Every window back to an equal share. |
+| `tile_master` `tile_columns` `tile_rows` `tile_grid` `tile_monocle` | Switch this workspace's layout. |
+| `tile_layout_next` `tile_layout_prev` | Step through them. |
+| `tile_master_count` | Change the master count by the given amount. |
+| `tile_master_ratio` | Change the master ratio by the given percentage. |
+| `get_tiling` | The layout, how many windows are tiled, and the master settings. |
+
+With the mouse, on a tiled window:
+
+- **mod + left drag** outlines the window under the pointer as it passes over;
+  letting go there trades the two windows' places.
+- **mod + right drag** moves the fences the window is against -- both of them
+  when the drag starts near a corner.
+- **dragging its own titlebar** takes it out of the tiling and leaves it under
+  the pointer, so the drag carries straight on.
+
+A tiled window's `maximize` lifts it out of the grid to fill the workspace and
+drops it back into the same place afterwards. Going fullscreen does the same.
+Neither disturbs the layout, and a client asking to be maximized on its own is
+ignored while it is tiled -- otherwise applications that start maximized would
+jump out of the grid before you saw them in it.
+
+---
+
 ## Borders
 
 Borders are drawn as rings around the window, innermost first. Each ring has
@@ -252,6 +373,8 @@ rules = {
 | `x`, `y` | Position. Both together, and not with `center`. |
 | `width`, `height` | Size. Both together. |
 | `center` | Centre on the monitor. |
+| `tiling` | `false` keeps the application out of the tiling, `true` puts it in whatever the default is. Its size and position above then apply, as they do to any floating window. |
+| `pinned` | `true` keeps the window above every other, fullscreen ones included — the same state the pin button sets. |
 | `titlebar` | Titlebar for this application only. |
 | `movable`, `resizable` | Allow dragging and resizing. Default `true`. |
 
@@ -299,6 +422,13 @@ workspaces, `mod+shift+r` reload, `mod+shift+e` quit.
 Both drags act on the window under the pointer, and dragging a maximized
 window gives up being maximized first. A window dropped on another monitor
 belongs to that monitor, and to the workspace that monitor is showing.
+
+On a tiled window the same two drags mean something else, because a tiled
+window has nowhere free to be dragged to: a left drag outlines the window under
+the pointer and trades their places when you let go, and a right drag moves the
+fences the window is against. Dragging a tiled window's own titlebar takes it
+out of the tiling and leaves it under the pointer, so the drag carries on.
+See [Tiling](#tiling).
 
 Focus follows the pointer, and each monitor remembers the window that was last
 focused on it. Focus alone does not change the stacking order:
@@ -497,9 +627,25 @@ restore it first.
 | --- | --- |
 | `focus` | `<window>` |
 | `focus_next`, `focus_prev` | — |
+| `focus_left`, `focus_right`, `focus_up`, `focus_down` | — the window that way, on this monitor or the next |
 | `unfocus` | — |
 | `workspace` | `<1-9>` |
 | `move_workspace` | `<window> <1-9>` |
+
+### Tiling
+
+| Command | Arguments |
+| --- | --- |
+| `tile` | `<window>` — in or out of the tiling |
+| `tile_move_left`, `tile_move_right`, `tile_move_up`, `tile_move_down` | `<window>` |
+| `tile_resize_left`, `tile_resize_right`, `tile_resize_up`, `tile_resize_down` | `<window> [pixels]` — `resize_step` without one |
+| `tile_promote` | `<window>` — to the master slot, or back |
+| `tile_swap` | `<window>` — trades places with the focused one |
+| `tile_equalize` | — |
+| `tile_master`, `tile_columns`, `tile_rows`, `tile_grid`, `tile_monocle` | — |
+| `tile_layout_next`, `tile_layout_prev` | — |
+| `tile_master_count` | `<change>` |
+| `tile_master_ratio` | `<percent>` |
 
 ### Queries
 
@@ -510,6 +656,7 @@ restore it first.
 | `get_title`, `get_app_id`, `get_id` | `<window>` |
 | `get_focus` | id of the focused window |
 | `get_workspace` | active workspace |
+| `get_tiling` | active workspace's `layout`, tiled window count, and `side count ratio` |
 | `get_screen_geometry` | active monitor's `x y width height` |
 | `get_cursor_position` | `x y` |
 | `list_windows` | one line per window: id, workspace, geometry, app_id, title |

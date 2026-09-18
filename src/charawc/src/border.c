@@ -115,6 +115,33 @@ chara_titlebar_height(const struct client *c)
 	return titlebar_shown(c) ? (int32_t)config.decoration->bar_height : 0;
 }
 
+/*
+ * The content rectangle inside a cell, with room left for the frame.
+ *
+ * swc's geometry is the window's *content*; the border rings and the titlebar
+ * are drawn outside it. Everything that hands a window a rectangle off the
+ * screen -- a maximize, a tile, a rule -- has to leave the same room for them,
+ * or a tiled window ends up a border away from where a maximized one sits.
+ */
+struct swc_rectangle
+chara_frame_inset_by(struct swc_rectangle cell, int32_t side, int32_t top)
+{
+	cell.x += side;
+	cell.y += top;
+	cell.width = cell.width > (uint32_t)(2 * side) ? cell.width - 2 * side : 1;
+	cell.height = cell.height > (uint32_t)(top + side)
+	    ? cell.height - top - side : 1;
+	return cell;
+}
+
+struct swc_rectangle
+chara_frame_inset(const struct client *c, struct swc_rectangle cell)
+{
+	int32_t side = chara_border_width();
+
+	return chara_frame_inset_by(cell, side, side + chara_titlebar_height(c));
+}
+
 void
 chara_apply_border(struct client *c, bool focused)
 {

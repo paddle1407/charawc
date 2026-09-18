@@ -9,6 +9,7 @@
 #include <swc.h>
 
 #include "chara.h"
+#include "tiling.h"
 
 /* One border ring. rings[0] is the ring touching the window. */
 struct ring {
@@ -48,6 +49,29 @@ struct client {
 	int32_t  x, y;
 	uint32_t width, height;
 	uint8_t  ws;
+
+	/*
+	 * Tiling.
+	 *
+	 * `tiled` is membership, and it survives everything: a window that goes
+	 * fullscreen, is minimized or is maximized stays a member and keeps its
+	 * place, it is only left out of the arrangement while it is like that.
+	 * Only the user taking it out, or the window closing, ends it.
+	 *
+	 * `tile_main` and `tile_cross` are its share of the group it lands in --
+	 * see tiling.h -- and they live here, on the window, so that opening and
+	 * closing windows cannot scramble the sizes of the ones that stay.
+	 */
+	bool     tiled;
+	/* A rule has spoken about whether this window tiles, so the default in
+	 * the configuration must not speak over it. */
+	bool     tile_ruled;
+	unsigned tile_order;              /* place among its workspace's tiles */
+	double   tile_main, tile_cross;
+	uint32_t tile_edges;              /* last published to the client */
+	bool     tile_mode_set;           /* swc already told it is tiled */
+	/* Where it goes when it leaves the tiling, remembered while it is in. */
+	struct swc_rectangle floating;
 };
 
 struct titlebar_style {
@@ -86,6 +110,8 @@ struct rule {
 	uint32_t width, height;
 	bool     has_pos, center;
 	bool     has_titlebar, titlebar;
+	bool     has_tiled, tiled;       /* keep it out of, or in, the tiling */
+	bool     has_pinned, pinned;     /* keep it above everything else */
 	bool     movable, resizable;
 };
 
@@ -112,6 +138,10 @@ struct screen {
 	 * pointer, so returning to a monitor returns to the window in use
 	 * there. Cleared when that window closes or moves away. */
 	struct client     *focus;
+	/* One layout per workspace, so switching a monitor's workspace switches
+	 * the arrangement with it. Index 0 is unused; workspaces count from 1. */
+	struct tile_ws    tiles[CHARA_WORKSPACES + 1];
+	bool              tile_dirty[CHARA_WORKSPACES + 1];
 };
 
 struct wm {

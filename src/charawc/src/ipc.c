@@ -35,6 +35,32 @@ const struct command commands[cmd_last] = {
 	[cmd_unfocus]          = { "unfocus", cmd_unfocus, 0, false, "" },
 	[cmd_workspace]        = { "workspace", cmd_workspace, 1, false, "<1-9>" },
 	[cmd_move_workspace]   = { "move_workspace", cmd_move_workspace, 1, true, "<window> <1-9>" },
+	[cmd_tile]             = { "tile", cmd_tile, 0, true, "<window>" },
+	[cmd_tile_promote]     = { "tile_promote", cmd_tile_promote, 0, true, "<window>" },
+	[cmd_tile_swap]        = { "tile_swap", cmd_tile_swap, 0, true, "<window>" },
+	[cmd_tile_equalize]    = { "tile_equalize", cmd_tile_equalize, 0, false, "" },
+	[cmd_focus_left]       = { "focus_left", cmd_focus_left, 0, false, "" },
+	[cmd_focus_right]      = { "focus_right", cmd_focus_right, 0, false, "" },
+	[cmd_focus_up]         = { "focus_up", cmd_focus_up, 0, false, "" },
+	[cmd_focus_down]       = { "focus_down", cmd_focus_down, 0, false, "" },
+	[cmd_tile_move_left]   = { "tile_move_left", cmd_tile_move_left, 0, true, "<window>" },
+	[cmd_tile_move_right]  = { "tile_move_right", cmd_tile_move_right, 0, true, "<window>" },
+	[cmd_tile_move_up]     = { "tile_move_up", cmd_tile_move_up, 0, true, "<window>" },
+	[cmd_tile_move_down]   = { "tile_move_down", cmd_tile_move_down, 0, true, "<window>" },
+	[cmd_tile_resize_left]  = { "tile_resize_left", cmd_tile_resize_left, 0, true, "<window> [pixels]", 1 },
+	[cmd_tile_resize_right] = { "tile_resize_right", cmd_tile_resize_right, 0, true, "<window> [pixels]", 1 },
+	[cmd_tile_resize_up]    = { "tile_resize_up", cmd_tile_resize_up, 0, true, "<window> [pixels]", 1 },
+	[cmd_tile_resize_down]  = { "tile_resize_down", cmd_tile_resize_down, 0, true, "<window> [pixels]", 1 },
+	[cmd_tile_master]      = { "tile_master", cmd_tile_master, 0, false, "" },
+	[cmd_tile_columns]     = { "tile_columns", cmd_tile_columns, 0, false, "" },
+	[cmd_tile_rows]        = { "tile_rows", cmd_tile_rows, 0, false, "" },
+	[cmd_tile_grid]        = { "tile_grid", cmd_tile_grid, 0, false, "" },
+	[cmd_tile_monocle]     = { "tile_monocle", cmd_tile_monocle, 0, false, "" },
+	[cmd_tile_layout_next] = { "tile_layout_next", cmd_tile_layout_next, 0, false, "" },
+	[cmd_tile_layout_prev] = { "tile_layout_prev", cmd_tile_layout_prev, 0, false, "" },
+	[cmd_tile_master_count] = { "tile_master_count", cmd_tile_master_count, 1, false, "<change>" },
+	[cmd_tile_master_ratio] = { "tile_master_ratio", cmd_tile_master_ratio, 1, false, "<percent>" },
+	[cmd_get_tiling]       = { "get_tiling", cmd_get_tiling, 0, false, "" },
 	[cmd_get_geometry]     = { "get_geometry", cmd_get_geometry, 0, true, "<window>" },
 	[cmd_get_pid]          = { "get_pid", cmd_get_pid, 0, true, "<window>" },
 	[cmd_get_title]        = { "get_title", cmd_get_title, 0, true, "<window>" },
@@ -86,6 +112,46 @@ number(const char *text, int32_t min, int32_t max, int32_t *out)
 	return true;
 }
 
+/*
+ * The direction and the layout a command names.
+ *
+ * Each of these is its own command -- an action carries numbers and a window
+ * selector and nothing else -- so the argument is in the name, and this is
+ * where it is read back out.
+ */
+static enum tile_dir
+direction_of(enum cmd command)
+{
+	switch (command) {
+	case cmd_focus_left:
+	case cmd_tile_move_left:
+	case cmd_tile_resize_left:
+		return TILE_LEFT;
+	case cmd_focus_up:
+	case cmd_tile_move_up:
+	case cmd_tile_resize_up:
+		return TILE_UP;
+	case cmd_focus_down:
+	case cmd_tile_move_down:
+	case cmd_tile_resize_down:
+		return TILE_DOWN;
+	default:
+		return TILE_RIGHT;
+	}
+}
+
+static enum tile_layout
+layout_of(enum cmd command)
+{
+	switch (command) {
+	case cmd_tile_columns: return TILE_COLUMNS;
+	case cmd_tile_rows:    return TILE_ROWS;
+	case cmd_tile_grid:    return TILE_GRID;
+	case cmd_tile_monocle: return TILE_MONOCLE;
+	default:               return TILE_MASTER;
+	}
+}
+
 /* A window keeps its own geometry unless it is fullscreen or maximized. */
 static status
 place(struct client *c, struct swc_rectangle g)
@@ -126,12 +192,20 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		if (!c && cmd->command != cmd_restore)
 			return fail("no such window: %s", selector ? selector : "focused");
 	}
-	if (argc - first < cmd->argc)
+	int provided = argc - first;
+	if (provided < cmd->argc)
 		return fail("usage: %s %s", cmd->name, cmd->usage);
 
-	/* Numeric arguments, when the command takes them. */
+	/* Numeric arguments, when the command takes them. The optional ones are
+	 * read only as far as they were actually given. */
 	{
-		for (int i = 0; i < cmd->argc && i < 4; ++i) {
+		int want = cmd->argc + cmd->optional;
+
+		if (want > 4)
+			want = 4;
+		if (want > provided)
+			want = provided;
+		for (int i = 0; i < want; ++i) {
 			int32_t min = -32768, max = 32767;
 			if (cmd->command == cmd_workspace || cmd->command == cmd_move_workspace)
 				min = 1, max = CHARA_WORKSPACES;
@@ -229,6 +303,88 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 	case cmd_move_workspace:
 		chara_ws_move_to((uint8_t)a[0], c);
 		return ok("");
+
+	/* ------------------------------------------------------------ tiling */
+	case cmd_tile:
+		if (!chara_tiling_set(c, !c->tiled))
+			return fail("the window would not change");
+		return ok(c->tiled ? "tiled" : "floating");
+	case cmd_tile_promote:
+		if (!chara_tiling_promote(c))
+			return fail("nothing to promote it over");
+		return ok("");
+	case cmd_tile_swap:
+		if (!chara_tiling_swap(c, wm.cur))
+			return fail("both windows must be tiled on the same workspace");
+		return ok("");
+	case cmd_tile_equalize:
+		chara_tiling_equalize(chara_active_screen(), chara_active_ws());
+		return ok("");
+	case cmd_focus_left:
+	case cmd_focus_right:
+	case cmd_focus_up:
+	case cmd_focus_down:
+		if (!chara_focus_dir(direction_of(cmd->command)))
+			return fail("nothing that way");
+		return ok("");
+	case cmd_tile_move_left:
+	case cmd_tile_move_right:
+	case cmd_tile_move_up:
+	case cmd_tile_move_down:
+		if (!chara_tiling_move_dir(c, direction_of(cmd->command)))
+			return fail("nowhere to move it");
+		return ok("");
+	case cmd_tile_resize_left:
+	case cmd_tile_resize_right:
+	case cmd_tile_resize_up:
+	case cmd_tile_resize_down: {
+		/* The step is optional: left out, the configured one is used, which
+		 * is what a key binding wants. */
+		int32_t pixels = provided >= 1 ? a[0] : config.tiling.resize_step;
+
+		if (!chara_tiling_resize_dir(c, direction_of(cmd->command), pixels))
+			return fail("no fence on that side to move");
+		return ok("");
+	}
+	case cmd_tile_master:
+	case cmd_tile_columns:
+	case cmd_tile_rows:
+	case cmd_tile_grid:
+	case cmd_tile_monocle:
+		chara_tiling_set_layout(chara_active_screen(), chara_active_ws(),
+		                        layout_of(cmd->command));
+		return ok("%s", tile_layout_name(layout_of(cmd->command)));
+	case cmd_tile_layout_next:
+	case cmd_tile_layout_prev: {
+		struct screen *s = chara_active_screen();
+		struct tile_ws *t;
+
+		chara_tiling_cycle_layout(s, chara_active_ws(),
+		    cmd->command == cmd_tile_layout_next ? 1 : -1);
+		t = chara_tiling_ws(s, chara_active_ws());
+		return t ? ok("%s", tile_layout_name(t->layout)) : fail("no monitor");
+	}
+	case cmd_tile_master_count:
+		if (!chara_tiling_master_count(chara_active_screen(), chara_active_ws(),
+		                               a[0]))
+			return fail("the master count would not change");
+		return ok("");
+	case cmd_tile_master_ratio:
+		if (!chara_tiling_master_ratio(chara_active_screen(), chara_active_ws(),
+		                               a[0]))
+			return fail("the master ratio would not change");
+		return ok("");
+	case cmd_get_tiling: {
+		struct screen *s = chara_active_screen();
+		uint8_t ws = chara_active_ws();
+		struct tile_ws *t = chara_tiling_ws(s, ws);
+
+		if (!t)
+			return fail("no monitor");
+		return ok("%s\t%u\t%s %u %.2f", tile_layout_name(t->layout),
+		          chara_tiling_count(s, ws), tile_side_name(t->master_side),
+		          t->master_count, t->master_ratio);
+	}
 	case cmd_get_geometry:
 		g = geometry_of(c);
 		return ok("%d %d %u %u", g.x, g.y, g.width, g.height);

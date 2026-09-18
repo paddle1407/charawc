@@ -36,6 +36,33 @@ struct monitor_config {
 	bool matched;
 };
 
+/* Where a newly tiled window lands in its workspace's order. */
+enum tile_insert {
+	TILE_INSERT_AFTER_FOCUS,
+	TILE_INSERT_END,
+	TILE_INSERT_START,
+	TILE_INSERT_MASTER,
+};
+
+struct tiling_config {
+	bool     enabled;         /* new windows join the tiling */
+	/* The layout a workspace starts on. Changing it at runtime is per
+	 * workspace and is not written back here. */
+	enum tile_layout layout;
+	enum tile_side   master_side;
+	double   master_ratio;
+	unsigned master_count;
+	int32_t  inner_gap, outer_gap;
+	bool     smart_gaps;      /* a workspace with one window gets none */
+	int32_t  resize_step;     /* pixels a keyboard resize moves a fence */
+	enum tile_insert insert;
+	/* Arranging slides windows under a still pointer, and the enter that
+	 * follows is not the user pointing at anything. Off by default. */
+	bool     focus_follows_relayout;
+	/* Dropping a dragged window on a tiled one trades their places. */
+	bool     drag_swaps;
+};
+
 struct bar_config {
 	bool enabled;
 	/* Digest of the whole bar table. charabar reads config.lua only when it
@@ -52,6 +79,7 @@ struct config {
 	int cursor_size;
 	struct wallpaper wallpaper;
 	struct bar_config bar;
+	struct tiling_config tiling;
 };
 
 /* config.c */
@@ -90,7 +118,56 @@ void chara_startup_run(struct config *);
 bool chara_startup_pending(void);
 void chara_child_exited(pid_t);
 
+/* tiling.c -- the glue between the layout engine and the compositor. The
+ * geometry itself is in tiling.h, and is pure. */
+bool chara_tiling_init(struct wl_event_loop *);
+void chara_tiling_finish(void);
+/* Ask for a workspace to be laid out again. Cheap and idempotent: the work
+ * happens once, at the end of the event loop turn, however often it is asked
+ * for, so a burst of events costs one configure per window. */
+void chara_tiling_dirty(struct screen *, uint8_t ws);
+void chara_tiling_dirty_client(const struct client *);
+void chara_tiling_dirty_all(void);
+void chara_tiling_flush(void);            /* lay out everything pending, now */
+void chara_tiling_ws_reset(struct screen *); /* every workspace to the config */
+/* True when the enter that just arrived was a window sliding under a pointer
+ * that never moved, rather than the user pointing at something. */
+bool chara_tiling_ignore_enter(void);
+/* Whether focusing this window must raise it too, as monocle needs. */
+bool chara_tiling_focus_raises(const struct client *);
+
+void chara_tiling_admit(struct client *);   /* place a new window */
+void chara_tiling_forget(struct client *);  /* it leaves the tiling for good */
+bool chara_tiling_set(struct client *, bool tiled);
+/* Out of the tiling, but left exactly where it is: what a drag wants. */
+bool chara_tiling_release_in_place(struct client *);
+/* After a fullscreen or a maximize handed the window back to the layout. */
+void chara_tiling_restore_mode(struct client *);
+/* After a window changed monitor or workspace. */
+void chara_tiling_reseat(struct client *, struct screen *from, uint8_t from_ws);
+
+/* Focus the window lying in a direction, on this monitor or the next one.
+ * Works over floating windows too: it asks about the screen, not the layout. */
+bool chara_focus_dir(enum tile_dir);
+bool chara_tiling_move_dir(struct client *, enum tile_dir);
+bool chara_tiling_resize_dir(struct client *, enum tile_dir, int32_t pixels);
+bool chara_tiling_swap(struct client *, struct client *);
+bool chara_tiling_promote(struct client *);
+bool chara_tiling_drop_at(struct client *, int32_t x, int32_t y);
+struct client *chara_tiling_at(int32_t x, int32_t y, struct swc_rectangle *cell);
+void chara_tiling_set_layout(struct screen *, uint8_t ws, enum tile_layout);
+void chara_tiling_cycle_layout(struct screen *, uint8_t ws, int direction);
+bool chara_tiling_master_count(struct screen *, uint8_t ws, int32_t delta);
+bool chara_tiling_master_ratio(struct screen *, uint8_t ws, int32_t percent);
+void chara_tiling_equalize(struct screen *, uint8_t ws);
+struct tile_ws *chara_tiling_ws(struct screen *, uint8_t ws);
+unsigned chara_tiling_count(struct screen *, uint8_t ws);
+
 /* border.c */
+struct swc_rectangle chara_frame_inset(const struct client *,
+                                       struct swc_rectangle cell);
+struct swc_rectangle chara_frame_inset_by(struct swc_rectangle cell,
+                                          int32_t side, int32_t top);
 struct decor *decor_create(void);
 void decor_destroy(struct decor *);
 void chara_decorate(struct client *, bool focused);

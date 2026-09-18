@@ -8,6 +8,9 @@
 
 static const struct swc_window_handler win_handler;
 
+/* Defined with the rest of the drag handling, below. */
+static void drag_forget(const struct client *);
+
 /* ------------------------------------------------------------------ ids */
 
 void
@@ -166,6 +169,11 @@ chara_focus(struct client *c)
 			chara_decorate(c, true);
 	}
 	swc_window_focus(c ? c->win : NULL);
+	/* In monocle every window is the same rectangle, so focusing one that is
+	 * behind another has to bring it forward; otherwise cycling through them
+	 * changes nothing you can see. */
+	if (c && chara_tiling_focus_raises(c))
+		swc_window_raise(c->win);
 }
 
 static bool
@@ -248,6 +256,7 @@ chara_ws_go_to(struct screen *s, uint8_t ws)
 	/* Tell desktop shells which workspace this monitor is showing. */
 	if (s->scr)
 		swc_workspace_set_active(s->scr, ws);
+	chara_tiling_dirty(s, ws);
 	chara_sync_windows();
 	chara_focus(first_on(s));
 }
@@ -263,8 +272,9 @@ chara_ws_move_to(uint8_t ws, struct client *c)
 	from = c->ws;
 	c->ws = ws;
 	swc_window_set_workspace(c->win, ws);
+	/* It leaves one workspace's layout and joins another's. */
+	chara_tiling_reseat(c, c->scr, from);
 	chara_sync_windows();
-	(void)from;
 	/* Sent to the workspace already on screen: showing no longer raises, and
 	 * a window put here on purpose should not arrive underneath something. */
 	if (c->scr && c->ws == c->scr->ws && !c->minimized)
@@ -290,11 +300,15 @@ chara_window_changed(struct client *c)
 
 	if (!c)
 		return;
-	if (swc_window_get_geometry(c->win, &g)) {
+	/* A tiled window's geometry belongs to the layout, and writing a drag
+	 * back over it would lose the place it is meant to return to. */
+	if (!c->tiled && swc_window_get_geometry(c->win, &g)) {
 		c->x = g.x;
 		c->y = g.y;
 		c->width = g.width;
 		c->height = g.height;
+		if (!c->fullscreen && !c->maximized)
+			c->floating = g;
 	}
 	s = chara_window_screen(c);
 	if (!s || s == c->scr)
@@ -306,12 +320,18 @@ chara_window_changed(struct client *c)
 	 * the monitor it came from hides a window sitting in plain sight on this
 	 * one.
 	 */
-	chara_forget_focus(c, s);
-	c->scr = s;
-	if (c->ws != s->ws) {
-		c->ws = s->ws;
-		swc_window_set_workspace(c->win, c->ws);
-		chara_sync_windows();
+	{
+		struct screen *from = c->scr;
+		uint8_t from_ws = c->ws;
+
+		chara_forget_focus(c, s);
+		c->scr = s;
+		if (c->ws != s->ws) {
+			c->ws = s->ws;
+			swc_window_set_workspace(c->win, c->ws);
+			chara_sync_windows();
+		}
+		chara_tiling_reseat(c, from, from_ws);
 	}
 	if (wm.cur == c)
 		s->focus = c;
@@ -332,15 +352,12 @@ chara_update_mode_geometry(struct client *c)
 		/* Decorations are drawn outside the content, so filling the usable
 		 * area exactly would push them off the screen. Leave room for the
 		 * ones the configuration asks to keep visible. */
-		struct swc_rectangle g = s->scr->usable_geometry;
 		int32_t side = config.values.maximize_borders ? chara_border_width() : 0;
 		int32_t top = side + (config.values.maximize_titlebar
 		    ? chara_titlebar_height(c) : 0);
+		struct swc_rectangle g =
+		    chara_frame_inset_by(s->scr->usable_geometry, side, top);
 
-		g.x += side;
-		g.y += top;
-		g.width = g.width > (uint32_t)(2 * side) ? g.width - 2 * side : 1;
-		g.height = g.height > (uint32_t)(top + side) ? g.height - top - side : 1;
 		swc_window_set_geometry(c->win, &g);
 	}
 }
@@ -354,6 +371,10 @@ restore_mode(struct client *c)
 		 * window it does not control the size of. */
 		swc_window_set_tiled(c->win);
 		chara_update_mode_geometry(c);
+	} else if (c->tiled) {
+		/* Back to its cell. The layout knows where that is; all this has to
+		 * do is say the mode again and ask to be laid out. */
+		chara_tiling_restore_mode(c);
 	} else {
 		swc_window_set_stacked(c->win);
 		struct swc_rectangle g = { c->x, c->y, c->width, c->height };
@@ -368,6 +389,9 @@ chara_set_fullscreen(struct client *c, bool fullscreen, struct swc_screen *on)
 		return false;
 
 	c->fullscreen = fullscreen;
+	/* A member going fullscreen leaves the grid without leaving the layout:
+	 * the others spread out, and it comes back to the place it kept. */
+	chara_tiling_dirty_client(c);
 	if (fullscreen) {
 		/*
 		 * A client may name the monitor it wants, but the name it gives is
@@ -402,6 +426,11 @@ chara_set_maximized(struct client *c, bool maximized)
 		return false;
 
 	c->maximized = maximized;
+	/* Maximizing a tiled window lifts it out of the grid to fill the
+	 * workspace, without disturbing the layout it will drop back into. */
+	chara_tiling_dirty_client(c);
+	if (maximized && c->tiled)
+		swc_window_raise(c->win);
 	restore_mode(c);
 	chara_decorate(c, wm.cur == c);
 	return true;
@@ -430,6 +459,7 @@ chara_minimize(struct client *c)
 
 	c->minimized = ++wm.minimize_order;
 	swc_window_set_minimized(c->win, true);
+	chara_tiling_dirty_client(c);
 	chara_sync_windows();
 	if (wm.cur == c) {
 		if (c->scr && c->scr->focus == c)
@@ -458,6 +488,8 @@ chara_restore(struct client *c)
 	if (c->scr)
 		c->ws = c->scr->ws;
 	swc_window_set_workspace(c->win, c->ws);
+	if (c->tiled)
+		chara_tiling_restore_mode(c);
 	chara_sync_windows();
 	/* Showing no longer raises, and a window coming back from the taskbar
 	 * that stayed buried would look like nothing happened. */
@@ -489,6 +521,20 @@ apply_rule(struct client *c)
 	c->resizable = match->resizable;
 	if (match->has_titlebar)
 		c->titlebar = match->titlebar;
+	/*
+	 * An app_id usually arrives after the window has been mapped, so this
+	 * runs a second time once it does. A rule that speaks about tiling is
+	 * recorded, so that the default in the configuration does not then put
+	 * back a window the rule has just taken out.
+	 */
+	if (match->has_tiled) {
+		c->tile_ruled = true;
+		chara_tiling_set(c, match->tiled);
+	}
+	/* Above everything, fullscreen windows included. A launcher or a
+	 * scratchpad wants this; it is the same state the pin button sets. */
+	if (match->has_pinned)
+		chara_set_pinned(c, match->pinned);
 	if (c->fullscreen || c->maximized)
 		return;
 
@@ -505,6 +551,11 @@ apply_rule(struct client *c)
 		g.x = area.x + ((int32_t)area.width - (int32_t)g.width) / 2;
 		g.y = area.y + ((int32_t)area.height - (int32_t)g.height) / 2;
 	}
+	/* A tiled window's size is the layout's to give, so the rule's geometry
+	 * is kept for wherever it ends up when it is not tiled. */
+	c->floating = g;
+	if (c->tiled)
+		return;
 	swc_window_set_geometry(c->win, &g);
 	c->x = g.x;
 	c->y = g.y;
@@ -536,6 +587,10 @@ on_entered(void *data)
 
 	if (wm.grab.active || !c->visible)
 		return;
+	/* Laying out slides windows about under a pointer that has not moved,
+	 * and the enter that follows is the layout's doing, not the user's. */
+	if (chara_tiling_ignore_enter())
+		return;
 	if (c->scr)
 		wm.scr = c->scr;
 	chara_focus(c);
@@ -553,6 +608,8 @@ on_destroy(void *data)
 		wm.grab.active = false;
 		wm.grab.client = NULL;
 	}
+	drag_forget(c);
+	chara_tiling_forget(c);
 	chara_forget_focus(c, NULL);
 	if (wm.cur == c)
 		wm.cur = NULL;
@@ -640,7 +697,18 @@ on_request_minimized(void *data, bool minimized)
 static void
 on_request_maximized(void *data, bool maximized)
 {
-	chara_set_maximized(data, maximized);
+	struct client *c = data;
+
+	/*
+	 * A tiled window is already exactly the size the layout gives it, and
+	 * plenty of applications ask to be maximized as they start. Honouring
+	 * that would throw them out of the grid before anyone had seen them in
+	 * it. The user's own maximize still works -- this is only the client
+	 * asking.
+	 */
+	if (c->tiled && maximized)
+		return;
+	chara_set_maximized(c, maximized);
 }
 
 static void
@@ -658,16 +726,26 @@ static void
 on_request_move(void *data)
 {
 	struct client *c = data;
-	if (c->movable)
-		chara_set_maximized(c, false);
+
+	if (!c->movable)
+		return;
+	chara_set_maximized(c, false);
+	/* Dragging a window's own titlebar is how you take it out of the tiling
+	 * by hand: there is nowhere for a tiled window to be dragged to. swc
+	 * looks at the mode again once this returns, so the drag it asked for
+	 * begins straight away. */
+	chara_tiling_release_in_place(c);
 }
 
 static void
 on_request_resize(void *data)
 {
 	struct client *c = data;
-	if (c->resizable)
-		chara_set_maximized(c, false);
+
+	if (!c->resizable)
+		return;
+	chara_set_maximized(c, false);
+	chara_tiling_release_in_place(c);
 }
 
 static const struct swc_window_handler win_handler = {
@@ -708,6 +786,8 @@ chara_new_window(struct swc_window *win)
 	c->titlebar = true;
 	c->width = 640;
 	c->height = 480;
+	c->tile_main = 1.0;
+	c->tile_cross = 1.0;
 
 	wl_list_insert(wm.clients.prev, &c->link);
 	swc_window_set_handler(win, &win_handler, c);
@@ -722,8 +802,12 @@ chara_new_window(struct swc_window *win)
 	}
 	struct swc_rectangle g = { c->x, c->y, c->width, c->height };
 	swc_window_set_geometry(win, &g);
+	c->floating = g;
 
 	apply_rule(c);
+	/* Unless a rule had something to say about it. */
+	if (!c->tile_ruled && config.tiling.enabled)
+		chara_tiling_set(c, true);
 	swc_window_show(win);
 	chara_focus(c);
 }
@@ -752,6 +836,128 @@ client_at_pointer(void)
 	return NULL;
 }
 
+/*
+ * Dragging a tiled window.
+ *
+ * A tiled window has nowhere free to be dragged to, so the two drags mean
+ * something else there. A move drag says where the window should go: the cell
+ * under the pointer is outlined as it passes over, and letting go there trades
+ * the two windows' places. A resize drag moves the fences the window sits
+ * against -- both of them at a corner -- which is the only kind of resize a
+ * tiled window has.
+ *
+ * Both need to follow the pointer, and swc's own interactive move and resize
+ * refuse to act on a tiled window, so they take a pointer grab of their own.
+ * The grab is ended from the binding's release, which still arrives.
+ */
+static struct {
+	struct client *client;
+	bool   active, resize;
+	enum tile_dir horizontal, vertical;
+	int32_t x, y;            /* 24.8, where the last applied step left off */
+	uint32_t last_time;
+	bool   outlined;
+} drag;
+
+static void
+drag_end(void)
+{
+	if (!drag.active)
+		return;
+	swc_pointer_grab_end();
+	if (drag.outlined)
+		swc_overlay_clear();
+	if (drag.resize)
+		swc_set_cursor(SWC_CURSOR_DEFAULT);
+	memset(&drag, 0, sizeof(drag));
+}
+
+/* A window going away mid-drag takes the drag with it. */
+static void
+drag_forget(const struct client *c)
+{
+	if (drag.active && drag.client == c)
+		drag_end();
+}
+
+static void
+drag_motion(void *data, uint32_t time, int32_t x, int32_t y)
+{
+	(void)data;
+
+	if (!drag.active || !drag.client)
+		return;
+	/* The same throttle swc puts on its own drags: a client asked to resize
+	 * faster than it can answer only falls further behind. */
+	if (drag.last_time && time - drag.last_time < CHARA_MOTION_THROTTLE_MS)
+		return;
+	drag.last_time = time;
+
+	if (!drag.resize) {
+		struct swc_rectangle cell;
+		struct client *over = chara_tiling_at(x / 256, y / 256, &cell);
+
+		if (!over || over == drag.client) {
+			if (drag.outlined)
+				swc_overlay_clear();
+			drag.outlined = false;
+			return;
+		}
+		/* The focused border colour, so the outline reads as "this cell",
+		 * and something visible when the borders are turned off. */
+		swc_overlay_set_box(cell.x, cell.y, cell.x + (int32_t)cell.width,
+		                    cell.y + (int32_t)cell.height,
+		                    config.values.ring_count
+		                        ? config.values.rings[0].focused : 0xffffffff,
+		                    2);
+		drag.outlined = true;
+		return;
+	}
+	{
+		int32_t dx = (x - drag.x) / 256, dy = (y - drag.y) / 256;
+
+		if (!dx && !dy)
+			return;
+		/*
+		 * Whatever the pointer has travelled is spent, whether the fence
+		 * could follow it or not. A fence stopped at a window's minimum
+		 * would otherwise run up a debt and jump when the pointer came
+		 * back the other way.
+		 */
+		drag.x += dx * 256;
+		drag.y += dy * 256;
+		if (dx)
+			chara_tiling_resize_dir(drag.client, drag.horizontal,
+			    drag.horizontal == TILE_RIGHT ? dx : -dx);
+		if (dy)
+			chara_tiling_resize_dir(drag.client, drag.vertical,
+			    drag.vertical == TILE_DOWN ? dy : -dy);
+	}
+}
+
+static void
+drag_begin(struct client *c, bool resize)
+{
+	int32_t x, y;
+
+	drag_end();
+	if (!swc_cursor_position(&x, &y))
+		return;
+	drag.client = c;
+	drag.resize = resize;
+	drag.x = x;
+	drag.y = y;
+	/* Which fences a resize moves: the ones the pointer started nearest,
+	 * one per axis, so a drag near a corner moves both. */
+	drag.horizontal = x / 256 < c->x + (int32_t)c->width / 2
+	    ? TILE_LEFT : TILE_RIGHT;
+	drag.vertical = y / 256 < c->y + (int32_t)c->height / 2
+	    ? TILE_UP : TILE_DOWN;
+	drag.active = swc_pointer_grab_begin(drag_motion, NULL);
+	if (drag.active && resize)
+		swc_set_cursor(SWC_CURSOR_ALL_RESIZE);
+}
+
 /* End of a mod+drag: the grab is released and the result written back. */
 static void
 end_grab(bool resize)
@@ -775,6 +981,15 @@ move_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 	struct client *c;
 
 	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		if (drag.active && !drag.resize) {
+			struct client *dragged = drag.client;
+			int32_t x, y;
+
+			drag_end();
+			if (dragged && swc_cursor_position(&x, &y))
+				chara_tiling_drop_at(dragged, x / 256, y / 256);
+			return;
+		}
 		end_grab(false);
 		return;
 	}
@@ -782,6 +997,11 @@ move_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 	if (!c || !c->movable || c->fullscreen)
 		return;
 	chara_focus(c);
+	if (c->tiled && !c->maximized) {
+		if (config.tiling.drag_swaps)
+			drag_begin(c, false);
+		return;
+	}
 	chara_set_maximized(c, false);
 	wm.grab = (struct grab){ .active = true, .resize = false, .client = c };
 	swc_window_begin_move(c->win);
@@ -794,6 +1014,10 @@ resize_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 	struct client *c;
 
 	if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		if (drag.active && drag.resize) {
+			drag_end();
+			return;
+		}
 		end_grab(true);
 		return;
 	}
@@ -801,6 +1025,10 @@ resize_handler(void *data, uint32_t time, uint32_t value, uint32_t state)
 	if (!c || !c->resizable || c->fullscreen)
 		return;
 	chara_focus(c);
+	if (c->tiled && !c->maximized) {
+		drag_begin(c, true);
+		return;
+	}
 	chara_set_maximized(c, false);
 	wm.grab = (struct grab){ .active = true, .resize = true, .client = c };
 	swc_window_begin_resize(c->win, SWC_WINDOW_EDGE_AUTO);
