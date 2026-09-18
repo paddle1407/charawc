@@ -3,6 +3,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -109,6 +110,46 @@ static const struct {
 	{ SWC_CURSOR_ALL_RESIZE,    { "all-resize", "fleur", "move" } },
 };
 
+/*
+ * Clients pick their own cursors out of the theme named here, so this has to
+ * be in the environment before anything is started -- Xwayland above all,
+ * which swc forks while it initializes. Setting it afterwards left every X
+ * client on the default theme, because a process only reads the environment
+ * it was given.
+ */
+static void
+export_cursor_theme(void)
+{
+	char text[16];
+
+	if (config.cursor_theme) {
+		setenv("XCURSOR_THEME", config.cursor_theme, 1);
+	}
+	snprintf(text, sizeof(text), "%d",
+	         config.cursor_size > 0 ? config.cursor_size : 24);
+	setenv("XCURSOR_SIZE", text, 1);
+
+	/*
+	 * Xcursor looks in ~/.local/share/icons; libxcb-cursor, which the X
+	 * window manager uses for the root cursor, does not. A theme installed
+	 * there is then found by some clients and not others. Naming the full
+	 * list once puts everything on the same footing. Only when the user has
+	 * not already said where to look.
+	 */
+	if (!getenv("XCURSOR_PATH")) {
+		const char *home = getenv("HOME");
+		char path[PATH_MAX];
+
+		if (home && *home == '/' &&
+		    snprintf(path, sizeof(path),
+		             "%s/.local/share/icons:%s/.icons:"
+		             "/usr/share/icons:/usr/share/pixmaps",
+		             home, home) < (int)sizeof(path)) {
+			setenv("XCURSOR_PATH", path, 1);
+		}
+	}
+}
+
 static void
 load_cursor_theme(void)
 {
@@ -142,11 +183,9 @@ load_cursor_theme(void)
 		XcursorImageDestroy(image);
 	}
 	/* Clients inherit the theme through the environment. */
-	if (config.cursor_theme)
-		setenv("XCURSOR_THEME", config.cursor_theme, 1);
-	char text[16];
-	snprintf(text, sizeof(text), "%d", size);
-	setenv("XCURSOR_SIZE", text, 1);
+	/* Also here, so a reload that changes the theme reaches anything
+	 * started from now on. */
+	export_cursor_theme();
 
 	free(loaded_theme);
 	loaded_theme = theme ? strdup(theme) : NULL;
@@ -616,6 +655,9 @@ main(int argc, char **argv)
 		return 0;
 	}
 
+	/* Before setup(): swc_initialize forks Xwayland, and it can only
+	 * inherit what is already in the environment. */
+	export_cursor_theme();
 	setup();
 	if (!chara_config_bindings(&config))
 		_wrn("some key bindings could not be installed");
