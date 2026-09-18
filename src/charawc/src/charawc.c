@@ -41,22 +41,80 @@ chara_socket_path(void)
 
 /* --------------------------------------------------------------- cursor */
 
+/*
+ * Every cursor charaWC can show, and the theme names to try for it. The first
+ * name that the theme actually provides wins.
+ *
+ * Two naming conventions are in use: the CSS names that cursor-shape-v1 is
+ * written in ("ns-resize"), which newer themes ship, and the older X names
+ * ("sb_v_double_arrow"), which most themes still ship. Listing both means a
+ * client asking for a resize cursor gets one from either kind of theme, and
+ * falls back to something sensible rather than nothing when a theme is
+ * missing a shape entirely.
+ */
+static const struct {
+	enum swc_cursor_kind kind;
+	const char *names[4];
+} cursors[] = {
+	/* charaWC's own mode cursors. */
+	{ SWC_CURSOR_DEFAULT,       { "default", "left_ptr", "arrow" } },
+	{ SWC_CURSOR_BOX,           { "fleur", "move" } },
+	{ SWC_CURSOR_CROSS,         { "crosshair", "cross" } },
+	{ SWC_CURSOR_SIGHT,         { "hand2", "pointer" } },
+	{ SWC_CURSOR_UP,            { "top_side", "n-resize" } },
+	{ SWC_CURSOR_DOWN,          { "bottom_side", "s-resize" } },
+
+	/* cursor-shape-v1, for clients that ask by name. */
+	{ SWC_CURSOR_CONTEXT_MENU,  { "context-menu", "left_ptr" } },
+	{ SWC_CURSOR_HELP,          { "help", "question_arrow", "whats_this" } },
+	{ SWC_CURSOR_POINTER,       { "pointer", "hand2", "hand1" } },
+	{ SWC_CURSOR_PROGRESS,      { "progress", "left_ptr_watch", "half-busy" } },
+	{ SWC_CURSOR_WAIT,          { "wait", "watch" } },
+	{ SWC_CURSOR_CELL,          { "cell", "plus" } },
+	{ SWC_CURSOR_CROSSHAIR,     { "crosshair", "cross", "tcross" } },
+	{ SWC_CURSOR_TEXT,          { "text", "xterm", "ibeam" } },
+	{ SWC_CURSOR_VERTICAL_TEXT, { "vertical-text", "xterm" } },
+	{ SWC_CURSOR_ALIAS,         { "alias", "dnd-link", "link" } },
+	{ SWC_CURSOR_COPY,          { "copy", "dnd-copy" } },
+	{ SWC_CURSOR_MOVE,          { "move", "dnd-move", "fleur" } },
+	{ SWC_CURSOR_NO_DROP,       { "no-drop", "dnd-no-drop", "forbidden" } },
+	{ SWC_CURSOR_NOT_ALLOWED,   { "not-allowed", "crossed_circle", "forbidden" } },
+	{ SWC_CURSOR_GRAB,          { "grab", "openhand", "hand1" } },
+	{ SWC_CURSOR_GRABBING,      { "grabbing", "closedhand", "fleur" } },
+	{ SWC_CURSOR_E_RESIZE,      { "e-resize", "right_side", "sb_h_double_arrow" } },
+	{ SWC_CURSOR_N_RESIZE,      { "n-resize", "top_side", "sb_v_double_arrow" } },
+	{ SWC_CURSOR_NE_RESIZE,     { "ne-resize", "top_right_corner" } },
+	{ SWC_CURSOR_NW_RESIZE,     { "nw-resize", "top_left_corner" } },
+	{ SWC_CURSOR_S_RESIZE,      { "s-resize", "bottom_side", "sb_v_double_arrow" } },
+	{ SWC_CURSOR_SE_RESIZE,     { "se-resize", "bottom_right_corner" } },
+	{ SWC_CURSOR_SW_RESIZE,     { "sw-resize", "bottom_left_corner" } },
+	{ SWC_CURSOR_W_RESIZE,      { "w-resize", "left_side", "sb_h_double_arrow" } },
+	{ SWC_CURSOR_EW_RESIZE,     { "ew-resize", "sb_h_double_arrow", "h_double_arrow" } },
+	{ SWC_CURSOR_NS_RESIZE,     { "ns-resize", "sb_v_double_arrow", "v_double_arrow" } },
+	{ SWC_CURSOR_NESW_RESIZE,   { "nesw-resize", "fd_double_arrow", "size_bdiag" } },
+	{ SWC_CURSOR_NWSE_RESIZE,   { "nwse-resize", "bd_double_arrow", "size_fdiag" } },
+	{ SWC_CURSOR_COL_RESIZE,    { "col-resize", "sb_h_double_arrow", "split_h" } },
+	{ SWC_CURSOR_ROW_RESIZE,    { "row-resize", "sb_v_double_arrow", "split_v" } },
+	{ SWC_CURSOR_ALL_SCROLL,    { "all-scroll", "fleur" } },
+	{ SWC_CURSOR_ZOOM_IN,       { "zoom-in", "zoom_in" } },
+	{ SWC_CURSOR_ZOOM_OUT,      { "zoom-out", "zoom_out" } },
+	{ SWC_CURSOR_DND_ASK,       { "dnd-ask", "copy" } },
+	{ SWC_CURSOR_ALL_RESIZE,    { "all-resize", "fleur", "move" } },
+};
+
 static void
 load_cursor_theme(void)
 {
-	static const struct { enum swc_cursor_kind kind; const char *name; } cursors[] = {
-		{ SWC_CURSOR_DEFAULT, "left_ptr" },
-		{ SWC_CURSOR_BOX, "fleur" },
-		{ SWC_CURSOR_CROSS, "crosshair" },
-		{ SWC_CURSOR_SIGHT, "hand2" },
-		{ SWC_CURSOR_UP, "top_side" },
-		{ SWC_CURSOR_DOWN, "bottom_side" },
-	};
 	int size = config.cursor_size > 0 ? config.cursor_size : 24;
 
 	for (size_t i = 0; i < sizeof(cursors) / sizeof(*cursors); ++i) {
-		XcursorImage *image = XcursorLibraryLoadImage(cursors[i].name,
-		    config.cursor_theme, size);
+		XcursorImage *image = NULL;
+
+		for (size_t n = 0; n < sizeof(cursors[i].names) / sizeof(*cursors[i].names)
+		     && cursors[i].names[n] && !image; ++n) {
+			image = XcursorLibraryLoadImage(cursors[i].names[n],
+			    config.cursor_theme, size);
+		}
 		if (!image) {
 			swc_clear_cursor_image(cursors[i].kind);
 			continue;

@@ -3,6 +3,7 @@
 
 # Scratch / experiments
 /temp/
+/TODO.md
 
 # src/libspng, src/neuswc and src/neuwld are git submodules — tracked as
 # pinned commits, not files. Their own .gitignore handles their build output.

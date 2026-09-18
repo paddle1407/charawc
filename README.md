@@ -8,6 +8,8 @@ A small Wayland compositor for Linux, built on
 - One Lua configuration file, reloaded in place with Super+Shift+R.
 - `charactl`, a control client that drives the running session from the shell.
 - `charabar`, a status bar that reads the same configuration file.
+- Screen locking, idle notification, primary selection, themed cursor shapes,
+  window activation and input methods, so ordinary desktop programs work.
 
 Configuration is documented in [CONFIG.md](CONFIG.md).
 

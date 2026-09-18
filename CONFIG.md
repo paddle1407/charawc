@@ -1,8 +1,8 @@
 # charaWC
 
 A small Wayland compositor built on [neuswc](src/neuswc) and
-[neuwld](src/neuwld). Windows float or tile, everything is configured from one
-Lua file, and a control client drives the running session from the shell.
+[neuwld](src/neuwld). Windows float, everything is configured from one Lua
+file, and a control client drives the running session from the shell.
 
 ```
 ~/.config/charawc/config.lua       your configuration
@@ -206,6 +206,13 @@ appearance = {
 Relative paths are resolved against the configuration file. The cursor theme
 is also exported to clients through `XCURSOR_THEME` and `XCURSOR_SIZE`.
 
+The theme covers more than the arrow. charaWC implements `cursor-shape-v1`, so
+a client that asks for a named cursor -- the I-beam over a text field, the
+double arrow on a window edge -- is given that shape from your theme rather
+than drawing one of its own. Every application's text cursor then looks the
+same. A theme that is missing a shape falls back to the closest one it does
+have, and only then to the client's own cursor.
+
 ## Window ids
 
 Every window gets an automatic id written as `#1`, `#2`, and so on. A rule can
@@ -398,6 +405,49 @@ bar = {
 Available modules are `workspaces`, `window`, `taskbar`, `clock`, `cpu`,
 `memory`, `network` and `volume`.
 
+### Bar appearance
+
+| Key | Meaning |
+| --- | --- |
+| `position` | `top` or `bottom` |
+| `layer` | `top` keeps the bar above windows, `bottom` below them |
+| `exclusive` | Whether windows are kept out of the bar's strip |
+| `height` | Bar height in pixels |
+| `padding` | Space between the bar's edge and the first module |
+| `spacing` | Space between modules |
+| `font` | Pango font description, e.g. `"MonaspiceRn Nerd Font Regular 10"` |
+| `background`, `foreground` | Bar colours |
+| `accent` | Used for the active workspace and similar highlights |
+| `muted` | Used for text that should recede, such as inactive entries |
+
+### Module options
+
+Each module takes its own table. `interval` is in seconds, and `0` means the
+module is only refreshed when charabar is sent `SIGUSR1` -- useful for a
+volume module that a keybind already tells about every change.
+
+```lua
+workspaces = { count = 9, format = "%n" },
+clock      = { format = "%a %d/%m/%Y  %H:%M", interval = 30 },
+memory     = { format = "mem %p%", interval = 2 },
+volume     = { format = "vol %p%", format_muted = "Muted", interval = 0 },
+network    = { format_online = "net", format_offline = "---", interval = 5 },
+```
+
+`%p` is the percentage a module reports; `%n` is the workspace number.
+
+The taskbar has more, because it is the one module that has to fit an
+unpredictable number of entries into whatever room the others leave:
+
+| Key | Meaning |
+| --- | --- |
+| `max_length` | Characters per entry before the title is cut short |
+| `scope` | `workspace`, `monitor` or `all` -- which windows are listed |
+| `overflow` | `shrink`, `scroll` or `none` when there is not enough room |
+| `min_width` | Entries stop narrowing here and start scrolling instead |
+| `max_width` | Widest the strip may get; `0` means as wide as it can |
+| `scroll_step` | Pixels the strip moves per wheel notch |
+
 `clock.format` is a `strftime` format, so `%H:%M` is a 24-hour clock and
 `%I:%M %p` a 12-hour one. Note that `%M` is the minute but `%m` is the month
 number, and `%h` is the abbreviated month name, not the hour. `interval` is
@@ -473,6 +523,64 @@ restore it first.
 | `quit` | End the session |
 
 ---
+
+## Screen locking
+
+charaWC implements `ext-session-lock-v1`, so any locker written for it --
+`swaylock`, `waylock`, `gtklock` -- works. There is no lock command built in;
+bind whichever you use:
+
+```lua
+{ key = "mod+shift+l", spawn = { "swaylock", "-f" } },
+```
+
+While the session is locked, windows are hidden, the wallpaper is painted
+black, and key bindings do nothing. Switching virtual terminal
+(`Ctrl+Alt+F2`) is the deliberate exception, and is the way out if a locker
+crashes: a locker that dies does **not** unlock the session, which is the
+point of locking it.
+
+## Idling
+
+`ext-idle-notify-v1` lets a program ask to be told when you have been away for
+a while, which is what an idle daemon uses to lock or blank the screen:
+
+```lua
+exec_once = {
+    { argv = { "swayidle", "-w",
+               "timeout", "300", "swaylock -f",
+               "timeout", "600", "charactl quit" } },
+},
+```
+
+`idle-inhibit-v1` is honoured, so a video player that asks to keep the session
+awake will stop the timer from running.
+
+## Selections, activation and input methods
+
+Three protocols that mostly matter by being present:
+
+`primary-selection-v1` is the second clipboard: text you highlight can be
+pasted with the middle mouse button, without copying it first.
+
+`xdg-activation-v1` lets one program hand focus to another. Clicking a link in
+a chat window brings the browser forward instead of leaving it to blink in the
+taskbar. A window raised this way goes through the same path as clicking it in
+charabar's taskbar, so it is un-minimized and its workspace switched to if
+needed.
+
+`text-input-v3` and `input-method-v2` are the two halves of input method
+support, for typing scripts a keyboard has no keys for. Start the input method
+with the session:
+
+```lua
+exec_once = {
+    { argv = { "fcitx5" } },
+},
+```
+
+The input method takes the keyboard while composing, so its candidate keys do
+not reach the application underneath. Compositor key bindings still work.
 
 ## Screen sharing
 
