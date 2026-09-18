@@ -111,6 +111,7 @@ struct rule {
 	bool     has_pos, center;
 	bool     has_titlebar, titlebar;
 	bool     has_tiled, tiled;       /* keep it out of, or in, the tiling */
+	bool     has_pinned, pinned;     /* keep it above everything else */
 	bool     movable, resizable;
 };
 

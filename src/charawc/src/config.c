@@ -331,7 +331,8 @@ parse_rules(lua_State *L, struct config *cfg, int index)
 		lua_rawgeti(L, index, i);
 		int t = lua_gettop(L);
 		FIELDS(L, t, path, "app_id", "id", "width", "height", "x", "y",
-		       "center", "titlebar", "movable", "resizable", "tiling");
+		       "center", "titlebar", "movable", "resizable", "tiling",
+		       "pinned");
 
 		struct rule *r = calloc(1, sizeof(*r));
 		if (!r)
@@ -385,6 +386,11 @@ parse_rules(lua_State *L, struct config *cfg, int index)
 		if (field(L, t, "tiling")) {
 			r->has_tiled = true;
 			r->tiled = boolean(L, -1, path);
+			lua_pop(L, 1);
+		}
+		if (field(L, t, "pinned")) {
+			r->has_pinned = true;
+			r->pinned = boolean(L, -1, path);
 			lua_pop(L, 1);
 		}
 		if (field(L, t, "movable")) { r->movable = boolean(L, -1, path); lua_pop(L, 1); }

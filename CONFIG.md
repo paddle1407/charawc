@@ -164,8 +164,10 @@ row.
 **grid** is as square as the count allows, filling rows from the top. An
 incomplete last row stretches to fill.
 
-**monocle** gives every window the whole workspace. Use `focus_next` or
-`focus_left` and so on to bring one to the front.
+**monocle** gives every window the whole workspace, one on top of another.
+Focusing a window brings it to the front, so `focus_next` and `focus_prev` step
+through them; so do `focus_left` and the rest, which have nothing to point at in
+monocle and step through the order instead, wrapping at both ends.
 
 ### Sizes
 
@@ -372,6 +374,7 @@ rules = {
 | `width`, `height` | Size. Both together. |
 | `center` | Centre on the monitor. |
 | `tiling` | `false` keeps the application out of the tiling, `true` puts it in whatever the default is. Its size and position above then apply, as they do to any floating window. |
+| `pinned` | `true` keeps the window above every other, fullscreen ones included — the same state the pin button sets. |
 | `titlebar` | Titlebar for this application only. |
 | `movable`, `resizable` | Allow dragging and resizing. Default `true`. |
 

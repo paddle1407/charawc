@@ -133,6 +133,8 @@ void chara_tiling_ws_reset(struct screen *); /* every workspace to the config */
 /* True when the enter that just arrived was a window sliding under a pointer
  * that never moved, rather than the user pointing at something. */
 bool chara_tiling_ignore_enter(void);
+/* Whether focusing this window must raise it too, as monocle needs. */
+bool chara_tiling_focus_raises(const struct client *);
 
 void chara_tiling_admit(struct client *);   /* place a new window */
 void chara_tiling_forget(struct client *);  /* it leaves the tiling for good */

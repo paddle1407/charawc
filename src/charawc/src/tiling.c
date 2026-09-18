@@ -285,6 +285,13 @@ arrange(struct screen *s, uint8_t ws)
 	settling = swc_cursor_position(&settled_x, &settled_y);
 	for (unsigned i = 0; i < p.n; ++i)
 		moved |= apply(p.clients[i], p.items[i].rect, p.area);
+	/* Monocle hands every window the same rectangle, one on top of another,
+	 * so which one is on top is the whole of what you can see. It has to be
+	 * the focused one, or switching to monocle shows whatever happened to be
+	 * raised last. */
+	if (s->tiles[ws].layout == TILE_MONOCLE && wm.cur && wm.cur->scr == s &&
+	    wm.cur->ws == ws && laid_out(wm.cur))
+		swc_window_raise(wm.cur->win);
 	if (!moved) {
 		settling = was_settling;
 		settled_x = was_x;
@@ -363,6 +370,28 @@ void
 chara_tiling_finish(void)
 {
 	event_loop = NULL;
+}
+
+/*
+ * Whether focusing a window has to raise it as well.
+ *
+ * On a monocle workspace, yes, and for floating windows as much as tiled ones.
+ * Monocle stacks every window on the same rectangle, so one that is focused
+ * but still behind another is a window that has not appeared -- and a floating
+ * window that did not raise with the focus would be buried by the next tiled
+ * one that did.
+ *
+ * The other layouts put their windows side by side, where raising would
+ * disturb the stacking order and show nothing that was not already visible.
+ */
+bool
+chara_tiling_focus_raises(const struct client *c)
+{
+	if (!c || c->minimized || !c->scr)
+		return false;
+	if (c->ws < 1 || c->ws > CHARA_WORKSPACES || c->ws != c->scr->ws)
+		return false;
+	return c->scr->tiles[c->ws].layout == TILE_MONOCLE;
 }
 
 bool
@@ -640,6 +669,39 @@ first_showing(struct screen *s)
 	return clients[0];
 }
 
+/*
+ * Stepping through a monocle workspace.
+ *
+ * Nothing is to the left of anything there -- every window is on the same
+ * rectangle -- so a direction has to mean something else, and going back and
+ * forth through the order is what it means. Both ends wrap, so the same key
+ * keeps going round rather than stopping at a window that looks no different
+ * from the others.
+ */
+static bool
+monocle_step(struct screen *s, enum tile_dir dir)
+{
+	struct plan p;
+	unsigned next;
+	int self;
+
+	if (!s || s->ws < 1 || s->ws > CHARA_WORKSPACES)
+		return false;
+	if (s->tiles[s->ws].layout != TILE_MONOCLE)
+		return false;
+	if (!build_plan(s, s->ws, &p) || p.n < 2)
+		return false;
+	self = wm.cur ? index_of(&p, wm.cur) : -1;
+	if (self < 0)
+		next = 0;
+	else if (dir == TILE_RIGHT || dir == TILE_DOWN)
+		next = ((unsigned)self + 1) % p.n;
+	else
+		next = ((unsigned)self + p.n - 1) % p.n;
+	chara_focus(p.clients[next]);
+	return true;
+}
+
 bool
 chara_focus_dir(enum tile_dir dir)
 {
@@ -669,6 +731,10 @@ chara_focus_dir(enum tile_dir dir)
 			return true;
 		}
 	}
+	/* Nothing beside it, which in monocle is always true: step through the
+	 * order there instead of walking off the monitor. */
+	if (monocle_step(s, dir))
+		return true;
 	/* Off the edge of this monitor, so carry on to the next one. */
 	to = screen_toward(s, dir);
 	if (!to || to == s)

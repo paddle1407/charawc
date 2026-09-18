@@ -169,6 +169,11 @@ chara_focus(struct client *c)
 			chara_decorate(c, true);
 	}
 	swc_window_focus(c ? c->win : NULL);
+	/* In monocle every window is the same rectangle, so focusing one that is
+	 * behind another has to bring it forward; otherwise cycling through them
+	 * changes nothing you can see. */
+	if (c && chara_tiling_focus_raises(c))
+		swc_window_raise(c->win);
 }
 
 static bool
@@ -526,6 +531,10 @@ apply_rule(struct client *c)
 		c->tile_ruled = true;
 		chara_tiling_set(c, match->tiled);
 	}
+	/* Above everything, fullscreen windows included. A launcher or a
+	 * scratchpad wants this; it is the same state the pin button sets. */
+	if (match->has_pinned)
+		chara_set_pinned(c, match->pinned);
 	if (c->fullscreen || c->maximized)
 		return;
 
