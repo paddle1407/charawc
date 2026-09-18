@@ -42,10 +42,27 @@ for binary in src/charawc/charawc src/charawc/charactl src/charabar/charabar; do
 	fi
 done
 
-mkdir -p "$BUILT" "$CONFIG_DIR/log"
+mkdir -p "$BUILT" "$BUILT/lib" "$CONFIG_DIR/log"
 install -m 755 "$ROOT/src/charawc/charawc"  "$BUILT/charawc"
 install -m 755 "$ROOT/src/charawc/charactl" "$BUILT/charactl"
 install -m 755 "$ROOT/src/charabar/charabar" "$BUILT/charabar"
+
+# charawc links against libraries that exist only in this tree's ./prefix, and
+# its runpath looks beside itself first. Without copying them, moving or
+# cleaning the build tree would break an installed session at the loader.
+copied=0
+while IFS= read -r lib; do
+	[ -n "$lib" ] || continue
+	install -m 755 -- "$(readlink -f -- "$lib")" "$BUILT/lib/$(basename -- "$lib")"
+	copied=$((copied + 1))
+done <<EOF
+$(ldd "$ROOT/src/charawc/charawc" 2>/dev/null |
+  sed -n "s|.* => \($ROOT/prefix/lib/.*\) (0x[0-9a-f]*)\$|\1|p")
+EOF
+if [ "$copied" -eq 0 ]; then
+	echo "install.sh: warning: no build-tree libraries were found to copy;" >&2
+	echo "  the installed session may depend on $ROOT staying in place" >&2
+fi
 
 # A login manager cannot run the compositor directly: charaWC needs swc-launch
 # for the VT and DRM master, a session bus, and an environment free of the
@@ -108,6 +125,12 @@ if [ -z "$launch" ]; then
 	echo "swc-launch not found; see install.sh" | tee -a "$log" >&2
 	exit 1
 fi
+# It opens the DRM device and switches VTs, so without the setuid bit it fails
+# later and less clearly than it does here.
+if [ ! -u "$launch" ]; then
+	echo "$launch is not setuid root; see install.sh" | tee -a "$log" >&2
+	exit 1
+fi
 
 if ! "$charawc" -C >> "$log" 2>&1; then
 	echo "charaWC configuration check failed; see $log" >&2
@@ -115,13 +138,24 @@ if ! "$charawc" -C >> "$log" 2>&1; then
 fi
 
 case ${XDG_VTNR:-} in
-	''|*[!0-9]*) session_tty=$(tty) ;;
+	''|*[!0-9]*) session_tty=$(tty 2>/dev/null || true) ;;
 	*) session_tty=/dev/tty$XDG_VTNR ;;
 esac
-printf 'Login VT: %s\n' "$session_tty" >> "$log"
+case $session_tty in
+	/dev/tty[0-9]*) ;;
+	*) session_tty= ;;
+esac
 
 cd "$HOME"
-exec dbus-run-session -- "$launch" -t "$session_tty" -- "$charawc" >> "$log" 2>&1
+if [ -n "$session_tty" ]; then
+	printf 'Login VT: %s\n' "$session_tty" >> "$log"
+	exec dbus-run-session -- "$launch" -t "$session_tty" -- "$charawc" >> "$log" 2>&1
+fi
+# No VT to name -- a display manager that starts us off a pseudo-terminal --
+# so let swc-launch find one itself rather than handing it something it
+# cannot switch to.
+printf 'Login VT: chosen by swc-launch\n' >> "$log"
+exec dbus-run-session -- "$launch" -- "$charawc" >> "$log" 2>&1
 SESSION_SCRIPT
 chmod 755 "$SESSION"
 
@@ -129,7 +163,7 @@ cat > "$DESKTOP" <<DESKTOP_ENTRY
 [Desktop Entry]
 Name=charaWC
 Comment=charaWC Wayland compositor
-Exec=$SESSION
+Exec="$SESSION"
 Type=Application
 DesktopNames=charaWC
 DESKTOP_ENTRY

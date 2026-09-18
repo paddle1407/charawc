@@ -39,4 +39,16 @@ if ! "$CHARAWC" -C "$@" >"$LOG" 2>&1; then
 fi
 cat "$LOG"
 
-swc-launch -t "$TTY" -- "$CHARAWC" "$@" 2>&1 | tee -a "$LOG"
+# The pipe into tee would otherwise hide the exit status behind tee's own,
+# so set -e never fired and run.sh reported success for a session that never
+# started.
+status_file=$(mktemp)
+trap 'rm -f -- "$status_file"' EXIT INT TERM
+{ swc-launch -t "$TTY" -- "$CHARAWC" "$@" 2>&1; echo $? >"$status_file"; } |
+	tee -a "$LOG"
+status=$(cat -- "$status_file" 2>/dev/null || echo 1)
+[ -n "$status" ] || status=1
+if [ "$status" -ne 0 ]; then
+	echo "run.sh: charaWC exited with status $status; see $LOG" >&2
+fi
+exit "$status"

@@ -74,8 +74,11 @@ meson install -C build >/dev/null
 
 step charawc
 cd "$SRC/charawc"
+# $ORIGIN/lib comes first so that install.sh can put libswc beside the
+# installed binary and the session stops depending on this checkout staying
+# where it is. Nothing sits there in the build tree, so it falls through.
 make PNG="$PNG" EXTRA_CPPFLAGS="-I$PREFIX/include" \
-     EXTRA_LDFLAGS="-Wl,-rpath,$PREFIX/lib" >/dev/null
+     EXTRA_LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/lib' -Wl,-rpath,$PREFIX/lib" >/dev/null
 
 step charabar
 cd "$SRC/charabar"
