@@ -989,3 +989,54 @@ chara_tiling_ws_reset(struct screen *s)
 		s->tile_dirty[ws] = false;
 	}
 }
+
+/*
+ * A monitor that has just appeared.
+ *
+ * Whether a workspace tiles is the session's, which is why the reset above
+ * leaves it alone: a reload is "apply what I have written" for the layouts,
+ * not an order to float everything the user has spent the session tiling.
+ * A monitor with no session behind it takes the configured default instead.
+ */
+void
+chara_tiling_ws_init(struct screen *s)
+{
+	if (!s)
+		return;
+	chara_tiling_ws_reset(s);
+	for (uint8_t ws = 0; ws <= CHARA_WORKSPACES; ++ws)
+		s->tile_on[ws] = config.tiling.enabled;
+}
+
+bool
+chara_tiling_ws_enabled(const struct screen *s, uint8_t ws)
+{
+	if (!s || ws < 1 || ws > CHARA_WORKSPACES)
+		return false;
+	return s->tile_on[ws];
+}
+
+/*
+ * Turn one workspace's tiling on or off.
+ *
+ * The flag decides what happens to windows opening there later; the windows
+ * already on it are taken in or out to match, because a workspace that says it
+ * tiles and shows a screen of floating windows is not telling the truth. A
+ * window a rule has spoken for keeps what the rule gave it -- a launcher is
+ * meant to float wherever it is opened.
+ */
+void
+chara_tiling_ws_enable(struct screen *s, uint8_t ws, bool on)
+{
+	struct client *c;
+
+	if (!s || ws < 1 || ws > CHARA_WORKSPACES)
+		return;
+	s->tile_on[ws] = on;
+	wl_list_for_each(c, &wm.clients, link) {
+		if (c->scr != s || c->ws != ws || c->tile_ruled)
+			continue;
+		chara_tiling_set(c, on);
+	}
+	chara_tiling_dirty(s, ws);
+}

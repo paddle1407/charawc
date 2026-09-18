@@ -170,7 +170,7 @@ setup(void)
 	config.values.title_format = strdup("%t");
 
 	for (unsigned i = 0; i < 2; ++i) {
-		chara_tiling_ws_reset(&screens[i]);
+		chara_tiling_ws_init(&screens[i]);
 		swc_screens[i].geometry = (struct swc_rectangle){ (int32_t)i * 1920, 0, 1920, 1080 };
 		swc_screens[i].usable_geometry = swc_screens[i].geometry;
 		screens[i].scr = &swc_screens[i];
@@ -593,8 +593,8 @@ test_each_workspace_keeps_its_own_layout(void)
 }
 
 /*
- * tiling.enabled is what decides whether a window arrives tiled or floating.
- * A rule overrides it either way, so a mostly-floating session can still have
+ * Whether the workspace tiles is what decides how a window arrives on it. A
+ * rule overrides it either way, so a mostly-floating session can still have
  * one application that always tiles, and the other way round.
  */
 static void
@@ -603,12 +603,12 @@ test_default_decides_how_windows_arrive(void)
 	static struct rule always_tiles;
 
 	setup();
-	config.tiling.enabled = false;
+	chara_tiling_ws_enable(&screens[0], 1, false);
 	chara_new_window(&windows[0]);
 	chara_tiling_flush();
 	check("with tiling off a new window floats", wm.cur && !wm.cur->tiled);
 
-	config.tiling.enabled = true;
+	chara_tiling_ws_enable(&screens[0], 1, true);
 	chara_new_window(&windows[1]);
 	chara_tiling_flush();
 	check("with it on a new window tiles", wm.cur && wm.cur->tiled);
@@ -620,7 +620,7 @@ test_default_decides_how_windows_arrive(void)
 	always_tiles.has_tiled = true;
 	always_tiles.tiled = true;
 	wl_list_insert(config.rules.prev, &always_tiles.link);
-	config.tiling.enabled = false;
+	chara_tiling_ws_enable(&screens[0], 1, false);
 
 	windows[0].app_id = (char *)"editor";
 	chara_new_window(&windows[0]);
@@ -634,6 +634,50 @@ test_default_decides_how_windows_arrive(void)
 	check("without taking anything else with it", wm.cur && !wm.cur->tiled);
 }
 
+/*
+ * Tiling is the workspace's, not the session's: the switch takes the windows
+ * already there in or out with it, the workspace next door keeps its own
+ * answer, and a window sent across arrives as that workspace does things.
+ */
+static void
+test_tiling_is_per_workspace(void)
+{
+	struct client *a, *b;
+
+	setup();
+	chara_tiling_ws_enable(&screens[0], 1, false);
+	chara_new_window(&windows[0]);
+	chara_tiling_flush();
+	a = wm.cur;
+	check("a window opening on a floating workspace floats", a && !a->tiled);
+
+	chara_tiling_ws_enable(&screens[0], 1, true);
+	chara_tiling_flush();
+	check("turning the workspace's tiling on takes it in", a && a->tiled);
+	check("and lays it out", is_rect(0, 2, 26, 1916, 1052));
+
+	chara_tiling_ws_enable(&screens[0], 1, false);
+	chara_tiling_flush();
+	check("turning it off leaves it floating again", a && !a->tiled);
+
+	/* Workspace 2 was never touched and still tiles what opens on it. */
+	chara_ws_go_to(&screens[0], 2);
+	chara_new_window(&windows[1]);
+	chara_tiling_flush();
+	b = wm.cur;
+	check("the workspace next door is not touched by either",
+	      chara_tiling_ws_enabled(&screens[0], 2) && b && b->tiled);
+
+	chara_ws_move_to(1, b);
+	chara_tiling_flush();
+	check("a window sent to a floating workspace leaves the tiling",
+	      b && !b->tiled);
+
+	chara_ws_move_to(2, b);
+	chara_tiling_flush();
+	check("and one sent back to a tiling workspace joins it", b && b->tiled);
+}
+
 int
 main(void)
 {
@@ -643,6 +687,7 @@ main(void)
 	test_fullscreen_is_undecorated();
 	test_tiling_places_windows();
 	test_tiling_survives_fullscreen();
+	test_tiling_is_per_workspace();
 	test_tiling_swaps_and_resizes();
 	test_untiling_restores_the_window();
 	test_monocle_focus_raises();

@@ -274,6 +274,10 @@ chara_ws_move_to(uint8_t ws, struct client *c)
 	swc_window_set_workspace(c->win, ws);
 	/* It leaves one workspace's layout and joins another's. */
 	chara_tiling_reseat(c, c->scr, from);
+	/* And the workspace it has arrived on decides whether it tiles, exactly
+	 * as it does for a window opening there. A rule still comes first. */
+	if (!c->tile_ruled)
+		chara_tiling_set(c, chara_tiling_ws_enabled(c->scr, ws));
 	chara_sync_windows();
 	/* Sent to the workspace already on screen: showing no longer raises, and
 	 * a window put here on purpose should not arrive underneath something. */
@@ -805,8 +809,9 @@ chara_new_window(struct swc_window *win)
 	c->floating = g;
 
 	apply_rule(c);
-	/* Unless a rule had something to say about it. */
-	if (!c->tile_ruled && config.tiling.enabled)
+	/* The workspace it opens on decides, unless a rule had something to say
+	 * about it. */
+	if (!c->tile_ruled && chara_tiling_ws_enabled(s, c->ws))
 		chara_tiling_set(c, true);
 	swc_window_show(win);
 	chara_focus(c);

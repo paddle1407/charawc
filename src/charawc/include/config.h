@@ -45,7 +45,10 @@ enum tile_insert {
 };
 
 struct tiling_config {
-	bool     enabled;         /* new windows join the tiling */
+	/* Whether a workspace starts out tiling. Turning it on and off at
+	 * runtime is per workspace -- see `tile_workspace` -- and is not
+	 * written back here. */
+	bool     enabled;
 	/* The layout a workspace starts on. Changing it at runtime is per
 	 * workspace and is not written back here. */
 	enum tile_layout layout;
@@ -129,7 +132,14 @@ void chara_tiling_dirty(struct screen *, uint8_t ws);
 void chara_tiling_dirty_client(const struct client *);
 void chara_tiling_dirty_all(void);
 void chara_tiling_flush(void);            /* lay out everything pending, now */
-void chara_tiling_ws_reset(struct screen *); /* every workspace to the config */
+void chara_tiling_ws_reset(struct screen *); /* layouts back to the config */
+/* A new monitor: the layouts, and whether each workspace tiles. */
+void chara_tiling_ws_init(struct screen *);
+/* Whether windows opening on that workspace join its tiling. */
+bool chara_tiling_ws_enabled(const struct screen *, uint8_t ws);
+/* Turn a workspace's tiling on or off, taking the windows already on it in
+ * or out with it. Windows a rule has spoken for are left alone. */
+void chara_tiling_ws_enable(struct screen *, uint8_t ws, bool on);
 /* True when the enter that just arrived was a window sliding under a pointer
  * that never moved, rather than the user pointing at something. */
 bool chara_tiling_ignore_enter(void);

@@ -36,6 +36,7 @@ const struct command commands[cmd_last] = {
 	[cmd_workspace]        = { "workspace", cmd_workspace, 1, false, "<1-9>" },
 	[cmd_move_workspace]   = { "move_workspace", cmd_move_workspace, 1, true, "<window> <1-9>" },
 	[cmd_tile]             = { "tile", cmd_tile, 0, true, "<window>" },
+	[cmd_tile_workspace]   = { "tile_workspace", cmd_tile_workspace, 0, false, "" },
 	[cmd_tile_promote]     = { "tile_promote", cmd_tile_promote, 0, true, "<window>" },
 	[cmd_tile_swap]        = { "tile_swap", cmd_tile_swap, 0, true, "<window>" },
 	[cmd_tile_equalize]    = { "tile_equalize", cmd_tile_equalize, 0, false, "" },
@@ -309,6 +310,17 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		if (!chara_tiling_set(c, !c->tiled))
 			return fail("the window would not change");
 		return ok(c->tiled ? "tiled" : "floating");
+	case cmd_tile_workspace: {
+		struct screen *s = chara_active_screen();
+		uint8_t ws = chara_active_ws();
+		bool on;
+
+		if (!s)
+			return fail("no monitor");
+		on = !chara_tiling_ws_enabled(s, ws);
+		chara_tiling_ws_enable(s, ws, on);
+		return ok("workspace %u %s", ws, on ? "tiling" : "floating");
+	}
 	case cmd_tile_promote:
 		if (!chara_tiling_promote(c))
 			return fail("nothing to promote it over");
@@ -381,9 +393,10 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 
 		if (!t)
 			return fail("no monitor");
-		return ok("%s\t%u\t%s %u %.2f", tile_layout_name(t->layout),
+		return ok("%s\t%u\t%s %u %.2f\t%s", tile_layout_name(t->layout),
 		          chara_tiling_count(s, ws), tile_side_name(t->master_side),
-		          t->master_count, t->master_ratio);
+		          t->master_count, t->master_ratio,
+		          chara_tiling_ws_enabled(s, ws) ? "on" : "off");
 	}
 	case cmd_get_geometry:
 		g = geometry_of(c);

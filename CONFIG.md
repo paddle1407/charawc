@@ -99,6 +99,11 @@ the workspace instead, and floating stays available either way: `tile` takes one
 window out of the tiling and puts it back, and a rule can keep an application
 out of it for good.
 
+Tiling is per workspace. `enabled` is only where each workspace starts;
+`tile_workspace` turns it on and off for the workspace in front of you, so a
+floating session can tile the one workspace that wants it and leave the rest
+alone.
+
 ```lua
 tiling = {
     enabled = true,
@@ -115,7 +120,7 @@ tiling = {
 
 | Setting | |
 | --- | --- |
-| `enabled` | Whether new windows tile. Default `false`. |
+| `enabled` | Whether a workspace starts out tiling. Default `false`; `tile_workspace` changes it per workspace at runtime. |
 | `layout` | The layout every workspace starts on. Changed per workspace at runtime. |
 | `gaps.inner` | Between neighbouring windows. |
 | `gaps.outer` | Around the edge of the workspace. |
@@ -131,7 +136,8 @@ tiling = {
 Each monitor's workspaces carry their own layout, master count and master
 ratio, so two workspaces on one monitor can be arranged differently and
 switching between them switches the arrangement too. Reloading puts them all
-back to what this section says.
+back to what this section says. Whether a workspace tiles is the session's, so
+a reload leaves that where you put it.
 
 ### The layouts
 
@@ -183,6 +189,7 @@ is not squeezed past it -- the fence stops there instead.
 
 | | |
 | --- | --- |
+| `tile_workspace` | Turn this workspace's tiling on or off. |
 | `tile` | Take a window out of the tiling, or put it back. |
 | `focus_left` `focus_right` `focus_up` `focus_down` | Focus the window that way, carrying on to the next monitor when there is none on this one. Works for floating windows too. |
 | `tile_move_left` and so on | Trade places with the window that way, or send it to the next monitor. |
@@ -194,7 +201,7 @@ is not squeezed past it -- the fence stops there instead.
 | `tile_layout_next` `tile_layout_prev` | Step through them. |
 | `tile_master_count` | Change the master count by the given amount. |
 | `tile_master_ratio` | Change the master ratio by the given percentage. |
-| `get_tiling` | The layout, how many windows are tiled, and the master settings. |
+| `get_tiling` | The layout, how many windows are tiled, the master settings, and whether the workspace tiles. |
 
 With the mouse, on a tiled window:
 
@@ -636,6 +643,7 @@ restore it first.
 
 | Command | Arguments |
 | --- | --- |
+| `tile_workspace` | — the active workspace's tiling on or off, taking the windows on it with it |
 | `tile` | `<window>` — in or out of the tiling |
 | `tile_move_left`, `tile_move_right`, `tile_move_up`, `tile_move_down` | `<window>` |
 | `tile_resize_left`, `tile_resize_right`, `tile_resize_up`, `tile_resize_down` | `<window> [pixels]` — `resize_step` without one |
@@ -656,7 +664,7 @@ restore it first.
 | `get_title`, `get_app_id`, `get_id` | `<window>` |
 | `get_focus` | id of the focused window |
 | `get_workspace` | active workspace |
-| `get_tiling` | active workspace's `layout`, tiled window count, and `side count ratio` |
+| `get_tiling` | active workspace's `layout`, tiled window count, `side count ratio`, and `on` or `off` |
 | `get_screen_geometry` | active monitor's `x y width height` |
 | `get_cursor_position` | `x y` |
 | `list_windows` | one line per window: id, workspace, geometry, app_id, title |

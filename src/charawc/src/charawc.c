@@ -303,7 +303,7 @@ chara_new_screen(struct swc_screen *scr)
 
 	s->scr = scr;
 	s->ws = 1;
-	chara_tiling_ws_reset(s);
+	chara_tiling_ws_init(s);
 	screen_geometry(s);
 	wl_list_insert(wm.screens.prev, &s->link);
 	if (!wm.scr)

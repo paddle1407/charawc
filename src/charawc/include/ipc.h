@@ -25,7 +25,8 @@ enum cmd {
 	 * focus_* is not tiling-only: it asks which window lies that way on the
 	 * screen, which a floating window answers as well as a tiled one.
 	 */
-	cmd_tile, cmd_tile_promote, cmd_tile_swap, cmd_tile_equalize,
+	cmd_tile, cmd_tile_workspace, cmd_tile_promote, cmd_tile_swap,
+	cmd_tile_equalize,
 	cmd_focus_left, cmd_focus_right, cmd_focus_up, cmd_focus_down,
 	cmd_tile_move_left, cmd_tile_move_right,
 	cmd_tile_move_up, cmd_tile_move_down,

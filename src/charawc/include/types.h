@@ -142,6 +142,12 @@ struct screen {
 	 * the arrangement with it. Index 0 is unused; workspaces count from 1. */
 	struct tile_ws    tiles[CHARA_WORKSPACES + 1];
 	bool              tile_dirty[CHARA_WORKSPACES + 1];
+	/* Whether this workspace tiles: windows opening on it join the layout,
+	 * and `tile_workspace` turns it on and off. Per workspace and per
+	 * monitor, so one workspace tiles while the next one floats. It starts
+	 * at `tiling.enabled` and is the session's from then on -- a reload puts
+	 * the layouts back to the configuration but leaves this alone. */
+	bool              tile_on[CHARA_WORKSPACES + 1];
 };
 
 struct wm {
