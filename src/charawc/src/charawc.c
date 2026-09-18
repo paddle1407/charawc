@@ -293,10 +293,13 @@ on_scr_entered(void *data)
 	 * arrives on does not get to take the focus with it. */
 	if (wm.grab.active)
 		return;
-	/* The remembered window may since have been minimized or sent to
-	 * another workspace; chara_first_on applies that test and falls back. */
-	if (s->focus)
-		chara_focus(chara_first_on(s));
+	/* The remembered window may since have been minimized or sent to another
+	 * workspace, and minimizing clears it outright, so ask for whatever this
+	 * monitor can actually show. An empty monitor leaves the focus alone
+	 * rather than taking it away from the one the pointer just left. */
+	struct client *next = chara_first_on(s);
+	if (next)
+		chara_focus(next);
 }
 
 static void
