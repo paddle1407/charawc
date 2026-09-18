@@ -969,8 +969,8 @@ parse(lua_State *L)
 
 	int root = lua_gettop(L);
 	FIELDS(L, root, "config", "mod", "raise_maximized_on_click",
-	       "raise_on_hover", "appearance", "bar", "bindings", "rules",
-	       "exec_once", "exec", "monitors");
+	       "raise_on_hover", "fullscreen_follows_client", "appearance", "bar",
+	       "bindings", "rules", "exec_once", "exec", "monitors");
 
 	if (field(L, root, "mod")) {
 		uint32_t key;
@@ -984,6 +984,11 @@ parse(lua_State *L)
 	}
 	if (field(L, root, "raise_on_hover")) {
 		cfg->values.raise_on_hover = boolean(L, -1, "raise_on_hover");
+		lua_pop(L, 1);
+	}
+	if (field(L, root, "fullscreen_follows_client")) {
+		cfg->values.fullscreen_follows_client =
+		    boolean(L, -1, "fullscreen_follows_client");
 		lua_pop(L, 1);
 	}
 	if (field(L, root, "appearance")) { parse_appearance(L, cfg, -1, filename); lua_pop(L, 1); }

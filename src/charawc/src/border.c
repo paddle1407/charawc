@@ -135,6 +135,19 @@ chara_decorate(struct client *c, bool focused)
 	struct decor *d = config.decoration;
 	struct swc_rectangle geometry;
 
+	/*
+	 * A fullscreen window is the whole monitor, and a frame is drawn outside
+	 * the content it belongs to, so there is nowhere left to put one. Drawn
+	 * anyway it lands past the edges: a strip of border painted onto the
+	 * monitor next door, and -- because the screens a view is on are taken
+	 * from what it actually paints -- the window joining that monitor's
+	 * outputs, which is enough for a taskbar there to list it.
+	 */
+	if (c->fullscreen) {
+		chara_undecorate(c);
+		return;
+	}
+
 	chara_apply_border(c, focused);
 
 	bool bar = titlebar_shown(c);

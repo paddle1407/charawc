@@ -160,8 +160,10 @@ reconcile(void)
 		struct screen *s = chara_window_screen(c);
 		if (!s && !wl_list_empty(&wm.screens))
 			s = wl_container_of(wm.screens.next, s, link);
-		if (s && s != c->scr)
+		if (s && s != c->scr) {
+			chara_forget_focus(c, s);
 			c->scr = s;
+		}
 	}
 	chara_sync_windows();
 }

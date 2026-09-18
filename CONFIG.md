@@ -328,6 +328,16 @@ monitors = {
 
 `charactl list_monitors` prints the connector names of the current outputs.
 
+A window going fullscreen fills the monitor it is already on. Clients may name
+a monitor of their own when they ask, but the one they name is usually just the
+first monitor charaWC advertised rather than one you picked -- Unity games ask
+for their "display 0" wherever their window happens to be -- so the request is
+ignored by default. To take clients at their word:
+
+```lua
+fullscreen_follows_client = true,
+```
+
 ## Starting programs
 
 `exec_once` runs when the session starts. `exec` runs again on every reload.

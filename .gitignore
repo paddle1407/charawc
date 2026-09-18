@@ -15,6 +15,7 @@
 /src/charawc/charawc
 /src/charawc/charactl
 /src/charawc/.png-*
+/src/charawc/test/focus_test
 
 # Compiler leftovers
 *.o

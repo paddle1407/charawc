@@ -24,7 +24,7 @@ SRC   = src/charawc.c src/window.c src/border.c src/ipc.c \
         src/config.c src/bindings.c src/startup.c src/wallpaper.c src/log.c
 HDR   = $(wildcard include/*.h)
 
-.PHONY: all clean
+.PHONY: all clean test
 all: charawc charactl
 
 # Switching PNG on or off changes how charawc is linked but touches no source
@@ -42,5 +42,16 @@ charawc: $(SRC) $(HDR) Makefile .png-$(PNG)
 charactl: src/charactl.c Makefile
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/charactl.c
 
+# The unit tests link the real window manager sources against stubs, so they
+# run without a compositor, a session or a graphics card.
+TESTS = test/focus_test
+test: $(TESTS)
+	@for t in $(TESTS); do echo "== $$t"; $$t || exit 1; done
+
+test/focus_test: test/focus_test.c src/window.c src/border.c src/log.c $(HDR) Makefile
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) \
+	  -Wl,-rpath,$(shell $(PKG_CONFIG) --variable=libdir swc) \
+	  -o $@ test/focus_test.c src/window.c src/border.c src/log.c $(LDLIBS)
+
 clean:
-	rm -f charawc charactl .png-*
+	rm -f charawc charactl .png-* $(TESTS)

@@ -21,6 +21,9 @@ struct values {
 	bool     raise_maximized_on_click;
 	/* Hovering a window brings it to the front, not just the keyboard. */
 	bool     raise_on_hover;
+	/* Honor the monitor a client names when it asks to go fullscreen,
+	 * instead of filling the monitor its window is already on. */
+	bool     fullscreen_follows_client;
 	/* Keep the border and the titlebar on screen while maximized. */
 	bool     maximize_borders, maximize_titlebar;
 	struct ring rings[CHARA_MAX_RINGS];

@@ -101,6 +101,7 @@ void chara_apply_border(struct client *, bool focused);
 
 /* window.c */
 void chara_focus(struct client *);
+void chara_forget_focus(const struct client *, const struct screen *keep);
 void chara_action_run(const struct action *);
 void chara_stop(void);
 void chara_request_reload(void);

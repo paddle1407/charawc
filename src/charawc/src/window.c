@@ -129,6 +129,25 @@ chara_window_screen(const struct client *c)
 
 /* ---------------------------------------------------------------- focus */
 
+/*
+ * Every monitor remembers the window last focused on it, so a window that has
+ * been focused on more than one is pointed at from more than one place. The
+ * monitor it is on is only ever the last of them, which makes it the wrong
+ * thing to clean up on its own: whoever moves a window between monitors, or
+ * destroys it, has to drop the pointers it is leaving behind. Missing one
+ * leaves a freed window to be focused the next time the pointer wanders onto
+ * that monitor.
+ */
+void
+chara_forget_focus(const struct client *c, const struct screen *keep)
+{
+	struct screen *s;
+
+	wl_list_for_each(s, &wm.screens, link)
+		if (s != keep && s->focus == c)
+			s->focus = NULL;
+}
+
 void
 chara_focus(struct client *c)
 {
@@ -287,6 +306,7 @@ chara_window_changed(struct client *c)
 	 * the monitor it came from hides a window sitting in plain sight on this
 	 * one.
 	 */
+	chara_forget_focus(c, s);
 	c->scr = s;
 	if (c->ws != s->ws) {
 		c->ws = s->ws;
@@ -349,9 +369,22 @@ chara_set_fullscreen(struct client *c, bool fullscreen, struct swc_screen *on)
 
 	c->fullscreen = fullscreen;
 	if (fullscreen) {
-		struct screen *s = on ? chara_screen_of(on) : c->scr;
-		if (s)
+		/*
+		 * A client may name the monitor it wants, but the name it gives is
+		 * usually the first one the compositor advertised rather than one the
+		 * user picked -- Unity games ask for their "display 0" whatever
+		 * monitor their window is sitting on -- so by default the window
+		 * fills the monitor it is already on and the hint is ignored.
+		 */
+		struct screen *s = NULL;
+		if (on && config.values.fullscreen_follows_client)
+			s = chara_screen_of(on);
+		if (!s)
+			s = c->scr;
+		if (s && s != c->scr) {
+			chara_forget_focus(c, s);
 			c->scr = s;
+		}
 		swc_window_set_fullscreen(c->win, c->scr ? c->scr->scr : NULL);
 	} else {
 		/* A client leaving fullscreen goes back to maximized if that is
@@ -520,8 +553,7 @@ on_destroy(void *data)
 		wm.grab.active = false;
 		wm.grab.client = NULL;
 	}
-	if (s && s->focus == c)
-		s->focus = NULL;
+	chara_forget_focus(c, NULL);
 	if (wm.cur == c)
 		wm.cur = NULL;
 
