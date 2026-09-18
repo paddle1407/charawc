@@ -543,6 +543,97 @@ test_rule_can_float_and_pin(void)
 	      wm.cur && wm.cur->tiled && !pinned_state[1]);
 }
 
+/*
+ * Every workspace on every monitor carries its own layout, master count and
+ * master ratio, so two workspaces on one screen can be arranged differently
+ * and switching between them switches the arrangement with it.
+ */
+static void
+test_each_workspace_keeps_its_own_layout(void)
+{
+	struct client *a, *b, *c, *d;
+
+	setup();
+	a = add_client(0, &screens[0]);
+	b = add_client(1, &screens[0]);
+	chara_tiling_set(a, true);
+	chara_tiling_set(b, true);
+	chara_tiling_set_layout(&screens[0], 1, TILE_COLUMNS);
+	chara_tiling_flush();
+	check("workspace 1 puts its two windows side by side",
+	      is_rect(0, 2, 26, 956, 1052) && is_rect(1, 962, 26, 956, 1052));
+
+	chara_ws_go_to(&screens[0], 2);
+	c = add_client(2, &screens[0]);
+	d = add_client(3, &screens[0]);
+	chara_tiling_set(c, true);
+	chara_tiling_set(d, true);
+	chara_tiling_set_layout(&screens[0], 2, TILE_ROWS);
+	chara_tiling_master_count(&screens[0], 2, 2);
+	chara_tiling_flush();
+	check("workspace 2 of the same monitor stacks its own instead",
+	      is_rect(2, 2, 26, 1916, 512) && is_rect(3, 2, 566, 1916, 512));
+
+	/* The monitor next door is not touched by any of it. */
+	chara_tiling_set_layout(&screens[1], 1, TILE_GRID);
+
+	chara_ws_go_to(&screens[0], 1);
+	chara_tiling_flush();
+	check("coming back finds workspace 1 exactly as it was",
+	      chara_tiling_ws(&screens[0], 1)->layout == TILE_COLUMNS &&
+	      is_rect(0, 2, 26, 956, 1052) && is_rect(1, 962, 26, 956, 1052));
+	check("while workspace 2 still holds its own layout",
+	      chara_tiling_ws(&screens[0], 2)->layout == TILE_ROWS);
+	check("and its own master count",
+	      chara_tiling_ws(&screens[0], 1)->master_count == 1 &&
+	      chara_tiling_ws(&screens[0], 2)->master_count == 3);
+	check("and the other monitor's workspace 1 is separate again",
+	      chara_tiling_ws(&screens[1], 1)->layout == TILE_GRID &&
+	      chara_tiling_ws(&screens[0], 1)->layout == TILE_COLUMNS);
+}
+
+/*
+ * tiling.enabled is what decides whether a window arrives tiled or floating.
+ * A rule overrides it either way, so a mostly-floating session can still have
+ * one application that always tiles, and the other way round.
+ */
+static void
+test_default_decides_how_windows_arrive(void)
+{
+	static struct rule always_tiles;
+
+	setup();
+	config.tiling.enabled = false;
+	chara_new_window(&windows[0]);
+	chara_tiling_flush();
+	check("with tiling off a new window floats", wm.cur && !wm.cur->tiled);
+
+	config.tiling.enabled = true;
+	chara_new_window(&windows[1]);
+	chara_tiling_flush();
+	check("with it on a new window tiles", wm.cur && wm.cur->tiled);
+
+	/* A rule wins over whichever way the default is set. */
+	setup();
+	memset(&always_tiles, 0, sizeof(always_tiles));
+	snprintf(always_tiles.app_id, sizeof(always_tiles.app_id), "editor");
+	always_tiles.has_tiled = true;
+	always_tiles.tiled = true;
+	wl_list_insert(config.rules.prev, &always_tiles.link);
+	config.tiling.enabled = false;
+
+	windows[0].app_id = (char *)"editor";
+	chara_new_window(&windows[0]);
+	chara_tiling_flush();
+	check("a rule can tile one application in a floating session",
+	      wm.cur && wm.cur->tiled);
+
+	windows[1].app_id = NULL;
+	chara_new_window(&windows[1]);
+	chara_tiling_flush();
+	check("without taking anything else with it", wm.cur && !wm.cur->tiled);
+}
+
 int
 main(void)
 {
@@ -557,6 +648,8 @@ main(void)
 	test_monocle_focus_raises();
 	test_monocle_cycles_with_the_directions();
 	test_rule_can_float_and_pin();
+	test_each_workspace_keeps_its_own_layout();
+	test_default_decides_how_windows_arrive();
 	printf("\n%s\n", failures ? "FAILURES" : "all ok");
 	return failures ? 1 : 0;
 }
