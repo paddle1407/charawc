@@ -8,6 +8,9 @@
 #define CHARA_MAX_RINGS 2   /* neuswc renders an inner and an outer ring */
 #define CHARA_WORKSPACES 9
 #define MAXSIZE 4096        /* IPC line buffer */
+/* Pointer motion is sampled no faster than this. Resizing a window faster
+ * than it can answer only makes it fall further behind. */
+#define CHARA_MOTION_THROTTLE_MS (1000 / 85)
 
 /* Logging. _err never returns. */
 void _inf(const char *, ...);

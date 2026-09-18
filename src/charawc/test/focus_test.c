@@ -36,7 +36,22 @@ void swc_decor_discard(struct swc_prepared_decor *p) {}
 void swc_window_apply_decor(struct swc_window *w, struct swc_prepared_decor *p) {}
 
 void swc_window_set_fullscreen(struct swc_window *w, struct swc_screen *s) { fullscreen_on = s; }
-void swc_window_set_geometry(struct swc_window *w, const struct swc_rectangle *g) {}
+
+/* The tiling writes geometry rather than reading it back, so record what each
+ * window was given and hand the same thing back when it is asked for. */
+static struct swc_rectangle geometry[4];
+static bool geometry_set[4];
+static unsigned window_index(const struct swc_window *w);
+
+void swc_window_set_geometry(struct swc_window *w, const struct swc_rectangle *g)
+{ unsigned i = window_index(w); if (i < 4) { geometry[i] = *g; geometry_set[i] = true; } }
+void swc_window_set_tiled_edges(struct swc_window *w, uint32_t edges) {}
+void swc_overlay_set_box(int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                         uint32_t color, uint32_t width) {}
+void swc_overlay_clear(void) {}
+void swc_set_cursor(enum swc_cursor_kind kind) {}
+bool swc_pointer_grab_begin(swc_pointer_motion_handler h, void *d) { return false; }
+void swc_pointer_grab_end(void) {}
 void swc_window_set_tiled(struct swc_window *w) {}
 void swc_window_set_stacked(struct swc_window *w) {}
 void swc_window_set_pinned(struct swc_window *w, bool p) {}
@@ -53,7 +68,14 @@ void swc_window_end_move(struct swc_window *w) {}
 void swc_window_begin_resize(struct swc_window *w, uint32_t e) {}
 void swc_window_end_resize(struct swc_window *w) {}
 void swc_window_set_handler(struct swc_window *w, const struct swc_window_handler *h, void *d) {}
-bool swc_window_get_geometry(const struct swc_window *w, struct swc_rectangle *g) { return false; }
+bool swc_window_get_geometry(const struct swc_window *w, struct swc_rectangle *g)
+{
+	unsigned i = window_index(w);
+	if (i >= 4 || !geometry_set[i])
+		return false;
+	*g = geometry[i];
+	return true;
+}
 struct swc_window *swc_window_at(int32_t x, int32_t y) { return NULL; }
 bool swc_cursor_position(int32_t *x, int32_t *y) { return false; }
 int swc_add_binding(enum swc_binding_type t, uint32_t m, uint32_t v,
@@ -68,6 +90,15 @@ static struct swc_screen swc_screens[2];
 static struct screen screens[2];
 static struct swc_window windows[4];
 static struct client clients[4];
+
+static unsigned
+window_index(const struct swc_window *w)
+{
+	for (unsigned i = 0; i < 4; ++i)
+		if (&windows[i] == w)
+			return i;
+	return 4;
+}
 
 struct screen *
 chara_screen_of(struct swc_screen *scr)
@@ -100,6 +131,22 @@ setup(void)
 	border_inner_width = border_outer_width = 0;
 	decor_cleared = decor_prepared = false;
 
+	memset(geometry, 0, sizeof(geometry));
+	memset(geometry_set, 0, sizeof(geometry_set));
+
+	/* Tiling with no gaps, so the numbers below are the frame and nothing
+	 * else. A 2px ring and a 24px titlebar: 2 to the sides and the bottom,
+	 * 26 off the top. */
+	config.tiling = (struct tiling_config){
+		.enabled = true,
+		.layout = TILE_MASTER,
+		.master_side = TILE_SIDE_LEFT,
+		.master_ratio = 0.5,
+		.master_count = 1,
+		.resize_step = 40,
+		.insert = TILE_INSERT_END,
+	};
+
 	if (!config.decoration)
 		config.decoration = decor_create();
 	config.decoration->titlebar.enabled = true;
@@ -109,6 +156,7 @@ setup(void)
 	config.values.title_format = strdup("%t");
 
 	for (unsigned i = 0; i < 2; ++i) {
+		chara_tiling_ws_reset(&screens[i]);
 		swc_screens[i].geometry = (struct swc_rectangle){ (int32_t)i * 1920, 0, 1920, 1080 };
 		swc_screens[i].usable_geometry = swc_screens[i].geometry;
 		screens[i].scr = &swc_screens[i];
@@ -251,6 +299,129 @@ test_fullscreen_is_undecorated(void)
 	      border_inner_width == 2 && decor_prepared);
 }
 
+/* ------------------------------------------------------------- tiling */
+
+static bool
+is_rect(unsigned window, int32_t x, int32_t y, uint32_t width, uint32_t height)
+{
+	return geometry_set[window] && geometry[window].x == x &&
+	       geometry[window].y == y && geometry[window].width == width &&
+	       geometry[window].height == height;
+}
+
+/*
+ * The glue, rather than the geometry: tiling_test already checks that the
+ * layout engine divides a rectangle correctly. What is worth checking here is
+ * that charaWC's windows reach it and come back with the frame allowed for.
+ */
+static void
+test_tiling_places_windows(void)
+{
+	struct client *a, *b;
+
+	setup();
+	a = add_client(0, &screens[0]);
+	chara_tiling_set(a, true);
+	chara_tiling_flush();
+	check("one tiled window fills the workspace inside its frame",
+	      is_rect(0, 2, 26, 1916, 1052));
+
+	b = add_client(1, &screens[0]);
+	chara_tiling_set(b, true);
+	chara_tiling_flush();
+	check("a second splits it, master first",
+	      is_rect(0, 2, 26, 956, 1052) && is_rect(1, 962, 26, 956, 1052));
+	check("and they are ordered as they arrived",
+	      a->tile_order == 0 && b->tile_order == 1);
+}
+
+static void
+test_tiling_survives_fullscreen(void)
+{
+	struct client *a, *b;
+
+	setup();
+	a = add_client(0, &screens[0]);
+	b = add_client(1, &screens[0]);
+	chara_tiling_set(a, true);
+	chara_tiling_set(b, true);
+	chara_tiling_flush();
+
+	chara_set_fullscreen(a, true, NULL);
+	chara_tiling_flush();
+	check("a window going fullscreen leaves the grid to the others",
+	      is_rect(1, 2, 26, 1916, 1052));
+	check("but keeps its membership and its place",
+	      a->tiled && a->tile_order == 0);
+
+	chara_set_fullscreen(a, false, NULL);
+	chara_tiling_flush();
+	check("and comes back to the cell it had",
+	      is_rect(0, 2, 26, 956, 1052) && is_rect(1, 962, 26, 956, 1052));
+}
+
+static void
+test_tiling_swaps_and_resizes(void)
+{
+	struct client *a, *b;
+
+	setup();
+	a = add_client(0, &screens[0]);
+	b = add_client(1, &screens[0]);
+	chara_tiling_set(a, true);
+	chara_tiling_set(b, true);
+	chara_tiling_flush();
+
+	check("moving right trades places with the neighbour",
+	      chara_tiling_move_dir(a, TILE_RIGHT));
+	chara_tiling_flush();
+	check("so the windows change cells and the cells stay put",
+	      is_rect(1, 2, 26, 956, 1052) && is_rect(0, 962, 26, 956, 1052) &&
+	      b->tile_order == 0 && a->tile_order == 1);
+
+	check("moving off the right of the monitor carries on to the next one",
+	      chara_tiling_move_dir(a, TILE_RIGHT) && a->scr == &screens[1]);
+	chara_tiling_flush();
+	check("where it fills the workspace on its own",
+	      is_rect(0, 1922, 26, 1916, 1052));
+	a->scr = &screens[0];
+	chara_tiling_reseat(a, &screens[1], a->ws);
+	chara_tiling_flush();
+
+	check("growing the master's right edge moves the fence",
+	      chara_tiling_resize_dir(b, TILE_RIGHT, 100));
+	chara_tiling_flush();
+	check("by the pixels asked for, out of the other window",
+	      is_rect(1, 2, 26, 1056, 1052) && is_rect(0, 1062, 26, 856, 1052));
+}
+
+static void
+test_untiling_restores_the_window(void)
+{
+	struct client *a, *b;
+
+	setup();
+	a = add_client(0, &screens[0]);
+	a->x = 300;
+	a->y = 200;
+	a->width = 640;
+	a->height = 480;
+	chara_tiling_set(a, true);
+	b = add_client(1, &screens[0]);
+	chara_tiling_set(b, true);
+	chara_tiling_flush();
+	check("tiling remembers where a window was floating",
+	      a->floating.x == 300 && a->floating.width == 640);
+
+	chara_tiling_set(a, false);
+	chara_tiling_flush();
+	check("and puts it back there when it leaves",
+	      is_rect(0, 300, 200, 640, 480) && !a->tiled);
+	check("while the one still tiled takes the whole workspace",
+	      is_rect(1, 2, 26, 1916, 1052));
+	check("and the orders close up behind it", b->tile_order == 0);
+}
+
 int
 main(void)
 {
@@ -258,6 +429,10 @@ main(void)
 	test_closing_clears_every_monitor();
 	test_fullscreen_monitor_choice();
 	test_fullscreen_is_undecorated();
+	test_tiling_places_windows();
+	test_tiling_survives_fullscreen();
+	test_tiling_swaps_and_resizes();
+	test_untiling_restores_the_window();
 	printf("\n%s\n", failures ? "FAILURES" : "all ok");
 	return failures ? 1 : 0;
 }

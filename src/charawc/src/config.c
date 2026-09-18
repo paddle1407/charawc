@@ -237,11 +237,13 @@ parse_binding(lua_State *L, struct config *cfg, int index, const char *path)
 			luaL_error(L, "%s.args: '%s' requires %s", path, name, cmd->usage);
 		return;
 	}
-	if (!cmd->argc)
+	if (!cmd->argc && !cmd->optional)
 		luaL_error(L, "%s.args: '%s' takes no arguments", path, name);
-	if (array(L, -1, path, 4) != cmd->argc)
+	int given = array(L, -1, path, 4);
+	if (given < cmd->argc || given > cmd->argc + cmd->optional)
 		luaL_error(L, "%s.args: '%s' requires %s", path, name, cmd->usage);
-	for (int i = 0; i < cmd->argc; ++i) {
+	b->action.argc = (unsigned)given;
+	for (int i = 0; i < given; ++i) {
 		int32_t min = -32768, max = 32767;
 		if (cmd->command == cmd_workspace || cmd->command == cmd_move_workspace)
 			min = 1, max = CHARA_WORKSPACES;
@@ -283,10 +285,25 @@ default_bindings(struct config *cfg)
 	    !default_binding(cfg, "mod+m", cmd_minimize, 0, NULL) ||
 	    !default_binding(cfg, "mod+n", cmd_restore, 0, NULL) ||
 	    !default_binding(cfg, "mod+c", cmd_center, 0, NULL) ||
-	    !default_binding(cfg, "mod+j", cmd_focus_next, 0, NULL) ||
-	    !default_binding(cfg, "mod+k", cmd_focus_prev, 0, NULL) ||
+	    !default_binding(cfg, "mod+Tab", cmd_focus_next, 0, NULL) ||
+	    !default_binding(cfg, "mod+shift+Tab", cmd_focus_prev, 0, NULL) ||
 	    !default_binding(cfg, "mod+shift+r", cmd_reload, 0, NULL) ||
-	    !default_binding(cfg, "mod+shift+e", cmd_quit, 0, NULL))
+	    !default_binding(cfg, "mod+shift+e", cmd_quit, 0, NULL) ||
+	    !default_binding(cfg, "mod+t", cmd_tile, 0, NULL) ||
+	    !default_binding(cfg, "mod+space", cmd_tile_layout_next, 0, NULL) ||
+	    !default_binding(cfg, "mod+Return", cmd_tile_promote, 0, NULL) ||
+	    !default_binding(cfg, "mod+h", cmd_focus_left, 0, NULL) ||
+	    !default_binding(cfg, "mod+j", cmd_focus_down, 0, NULL) ||
+	    !default_binding(cfg, "mod+k", cmd_focus_up, 0, NULL) ||
+	    !default_binding(cfg, "mod+l", cmd_focus_right, 0, NULL) ||
+	    !default_binding(cfg, "mod+shift+h", cmd_tile_move_left, 0, NULL) ||
+	    !default_binding(cfg, "mod+shift+l", cmd_tile_move_right, 0, NULL) ||
+	    !default_binding(cfg, "mod+shift+j", cmd_tile_move_down, 0, NULL) ||
+	    !default_binding(cfg, "mod+shift+k", cmd_tile_move_up, 0, NULL) ||
+	    !default_binding(cfg, "mod+ctrl+h", cmd_tile_resize_left, 0, NULL) ||
+	    !default_binding(cfg, "mod+ctrl+l", cmd_tile_resize_right, 0, NULL) ||
+	    !default_binding(cfg, "mod+ctrl+k", cmd_tile_resize_up, 0, NULL) ||
+	    !default_binding(cfg, "mod+ctrl+j", cmd_tile_resize_down, 0, NULL))
 		return false;
 	for (int i = 1; i <= CHARA_WORKSPACES; ++i) {
 		char key[32];
@@ -314,7 +331,7 @@ parse_rules(lua_State *L, struct config *cfg, int index)
 		lua_rawgeti(L, index, i);
 		int t = lua_gettop(L);
 		FIELDS(L, t, path, "app_id", "id", "width", "height", "x", "y",
-		       "center", "titlebar", "movable", "resizable");
+		       "center", "titlebar", "movable", "resizable", "tiling");
 
 		struct rule *r = calloc(1, sizeof(*r));
 		if (!r)
@@ -363,6 +380,11 @@ parse_rules(lua_State *L, struct config *cfg, int index)
 		if (field(L, t, "titlebar")) {
 			r->has_titlebar = true;
 			r->titlebar = boolean(L, -1, path);
+			lua_pop(L, 1);
+		}
+		if (field(L, t, "tiling")) {
+			r->has_tiled = true;
+			r->tiled = boolean(L, -1, path);
 			lua_pop(L, 1);
 		}
 		if (field(L, t, "movable")) { r->movable = boolean(L, -1, path); lua_pop(L, 1); }
@@ -696,6 +718,94 @@ parse_appearance(lua_State *L, struct config *cfg, int index, const char *filena
 	}
 }
 
+/* --------------------------------------------------------------- tiling */
+
+static void
+parse_tiling(lua_State *L, struct config *cfg, int index)
+{
+	static const char *const layouts[] = {
+		"master", "columns", "rows", "grid", "monocle", NULL,
+	};
+	static const char *const sides[] = { "left", "right", "top", "bottom", NULL };
+	static const char *const inserts[] = { "after_focus", "end", "start", NULL };
+	struct tiling_config *t = &cfg->tiling;
+
+	index = lua_absindex(L, index);
+	FIELDS(L, index, "tiling", "enabled", "layout", "gaps", "smart_gaps",
+	       "master", "resize_step", "insert", "focus_follows_relayout",
+	       "drag_swaps");
+
+	if (field(L, index, "enabled")) {
+		t->enabled = boolean(L, -1, "tiling.enabled");
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "layout")) {
+		t->layout = (enum tile_layout)one_of(L, -1, "tiling.layout", layouts);
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "smart_gaps")) {
+		t->smart_gaps = boolean(L, -1, "tiling.smart_gaps");
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "resize_step")) {
+		t->resize_step = integer(L, -1, "tiling.resize_step", 1, 4096);
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "insert")) {
+		t->insert = (enum tile_insert)one_of(L, -1, "tiling.insert", inserts);
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "focus_follows_relayout")) {
+		t->focus_follows_relayout =
+		    boolean(L, -1, "tiling.focus_follows_relayout");
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "drag_swaps")) {
+		t->drag_swaps = boolean(L, -1, "tiling.drag_swaps");
+		lua_pop(L, 1);
+	}
+	/* gaps = 8, or gaps = { inner = 8, outer = 12 }. */
+	if (field(L, index, "gaps")) {
+		if (lua_isnumber(L, -1)) {
+			t->inner_gap = t->outer_gap =
+			    integer(L, -1, "tiling.gaps", 0, 512);
+		} else {
+			int g = lua_gettop(L);
+			FIELDS(L, g, "tiling.gaps", "inner", "outer");
+			if (field(L, g, "inner")) {
+				t->inner_gap = integer(L, -1, "tiling.gaps.inner", 0, 512);
+				lua_pop(L, 1);
+			}
+			if (field(L, g, "outer")) {
+				t->outer_gap = integer(L, -1, "tiling.gaps.outer", 0, 512);
+				lua_pop(L, 1);
+			}
+		}
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "master")) {
+		int m = lua_gettop(L);
+		FIELDS(L, m, "tiling.master", "count", "ratio", "side");
+		if (field(L, m, "count")) {
+			t->master_count =
+			    (unsigned)integer(L, -1, "tiling.master.count", 1, 64);
+			lua_pop(L, 1);
+		}
+		if (field(L, m, "ratio")) {
+			/* A percentage, so that the file never needs a float. */
+			t->master_ratio =
+			    (double)integer(L, -1, "tiling.master.ratio", 5, 95) / 100.0;
+			lua_pop(L, 1);
+		}
+		if (field(L, m, "side")) {
+			t->master_side =
+			    (enum tile_side)one_of(L, -1, "tiling.master.side", sides);
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
+	}
+}
+
 /* ------------------------------------------------------------------ bar */
 
 /* charabar reads this section itself. charaWC validates it so a mistake is
@@ -970,7 +1080,7 @@ parse(lua_State *L)
 	int root = lua_gettop(L);
 	FIELDS(L, root, "config", "mod", "raise_maximized_on_click",
 	       "raise_on_hover", "fullscreen_follows_client", "appearance", "bar",
-	       "bindings", "rules", "exec_once", "exec", "monitors");
+	       "tiling", "bindings", "rules", "exec_once", "exec", "monitors");
 
 	if (field(L, root, "mod")) {
 		uint32_t key;
@@ -993,6 +1103,7 @@ parse(lua_State *L)
 	}
 	if (field(L, root, "appearance")) { parse_appearance(L, cfg, -1, filename); lua_pop(L, 1); }
 	if (field(L, root, "bar")) { parse_bar(L, cfg, -1); lua_pop(L, 1); }
+	if (field(L, root, "tiling")) { parse_tiling(L, cfg, -1); lua_pop(L, 1); }
 	if (field(L, root, "bindings")) {
 		int t = lua_gettop(L), n = array(L, t, "bindings", 4096);
 		for (int i = 1; i <= n; ++i) {
@@ -1044,6 +1155,22 @@ chara_config_init(struct config *cfg)
 			{ .width = 2, .focused = 0xfffabd2f, .unfocused = 0xff3c3836 },
 		},
 		.title_format = strdup("%t"),
+	};
+	cfg->tiling = (struct tiling_config){
+		/* Off by default: charaWC has always opened windows floating, and
+		 * turning that over on an upgrade would be a surprise. */
+		.enabled = false,
+		.layout = TILE_MASTER,
+		.master_side = TILE_SIDE_LEFT,
+		.master_ratio = 0.55,
+		.master_count = 1,
+		.inner_gap = 6,
+		.outer_gap = 6,
+		.smart_gaps = true,
+		.resize_step = 40,
+		.insert = TILE_INSERT_AFTER_FOCUS,
+		.focus_follows_relayout = false,
+		.drag_swaps = true,
 	};
 	cfg->decoration = decor_create();
 	return cfg->values.title_format && cfg->decoration;
@@ -1285,12 +1412,45 @@ static const char config_example[] =
 	"		memory = { format = \"RAM %p%\", interval = 2 },\n"
 	"	},\n"
 	"\n"
+	"	-- Windows float unless this is on. Floating stays available either\n"
+	"	-- way: mod+t takes one window out of the tiling and puts it back.\n"
+	"	tiling = {\n"
+	"		enabled = false,\n"
+	"		-- master, columns, rows, grid or monocle. Changed per workspace\n"
+	"		-- at runtime with mod+space; this is what they start on.\n"
+	"		layout = \"master\",\n"
+	"		gaps = { inner = 6, outer = 6 },\n"
+	"		smart_gaps = true, -- a workspace with one window gets none\n"
+	"		master = { count = 1, ratio = 55, side = \"left\" },\n"
+	"		resize_step = 40,  -- pixels a keyboard resize moves a fence\n"
+	"	},\n"
+	"\n"
 	"	bindings = {\n"
 	"		{ key = \"mod+Return\", spawn = { \"foot\" } },\n"
 	"		{ key = \"mod+q\", action = \"close\" },\n"
 	"		{ key = \"mod+f\", action = \"maximize\" },\n"
-	"		{ key = \"mod+j\", action = \"focus_next\" },\n"
-	"		{ key = \"mod+k\", action = \"focus_prev\" },\n"
+	"		{ key = \"mod+Tab\", action = \"focus_next\" },\n"
+	"		{ key = \"mod+shift+Tab\", action = \"focus_prev\" },\n"
+	"\n"
+	"		-- Tiling. focus_* works whether the window is tiled or not.\n"
+	"		{ key = \"mod+t\", action = \"tile\" },              -- tile <-> float\n"
+	"		{ key = \"mod+space\", action = \"tile_layout_next\" },\n"
+	"		{ key = \"mod+o\", action = \"tile_promote\" },      -- to the master slot\n"
+	"		{ key = \"mod+h\", action = \"focus_left\" },\n"
+	"		{ key = \"mod+j\", action = \"focus_down\" },\n"
+	"		{ key = \"mod+k\", action = \"focus_up\" },\n"
+	"		{ key = \"mod+l\", action = \"focus_right\" },\n"
+	"		{ key = \"mod+shift+h\", action = \"tile_move_left\" },\n"
+	"		{ key = \"mod+shift+j\", action = \"tile_move_down\" },\n"
+	"		{ key = \"mod+shift+k\", action = \"tile_move_up\" },\n"
+	"		{ key = \"mod+shift+l\", action = \"tile_move_right\" },\n"
+	"		{ key = \"mod+ctrl+h\", action = \"tile_resize_left\" },\n"
+	"		{ key = \"mod+ctrl+j\", action = \"tile_resize_down\" },\n"
+	"		{ key = \"mod+ctrl+k\", action = \"tile_resize_up\" },\n"
+	"		{ key = \"mod+ctrl+l\", action = \"tile_resize_right\" },\n"
+	"		{ key = \"mod+comma\", action = \"tile_master_count\", args = { 1 } },\n"
+	"		{ key = \"mod+period\", action = \"tile_master_count\", args = { -1 } },\n"
+	"\n"
 	"		{ key = \"mod+shift+r\", action = \"reload\" }, -- re-read this file\n"
 	"		{ key = \"mod+shift+e\", action = \"quit\" },   -- log out\n"
 	"	},\n"

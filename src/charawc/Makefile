@@ -21,7 +21,8 @@ LDLIBS     += $(shell $(PKG_CONFIG) --libs $(PKGS)) -lm
 LDFLAGS    += $(EXTRA_LDFLAGS)
 
 SRC   = src/charawc.c src/window.c src/border.c src/ipc.c \
-        src/config.c src/bindings.c src/startup.c src/wallpaper.c src/log.c
+        src/config.c src/bindings.c src/startup.c src/wallpaper.c src/log.c \
+        src/tiling.c src/tiling_layout.c
 HDR   = $(wildcard include/*.h)
 
 .PHONY: all clean test
@@ -44,14 +45,21 @@ charactl: src/charactl.c Makefile
 
 # The unit tests link the real window manager sources against stubs, so they
 # run without a compositor, a session or a graphics card.
-TESTS = test/focus_test
+TESTS = test/focus_test test/tiling_test
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t"; $$t || exit 1; done
 
-test/focus_test: test/focus_test.c src/window.c src/border.c src/log.c $(HDR) Makefile
+FOCUS_SRC = src/window.c src/border.c src/tiling.c src/tiling_layout.c src/log.c
+test/focus_test: test/focus_test.c $(FOCUS_SRC) $(HDR) Makefile
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) \
 	  -Wl,-rpath,$(shell $(PKG_CONFIG) --variable=libdir swc) \
-	  -o $@ test/focus_test.c src/window.c src/border.c src/log.c $(LDLIBS)
+	  -o $@ test/focus_test.c $(FOCUS_SRC) $(LDLIBS)
+
+# The layout engine calls nothing, so its test needs neither stubs nor swc:
+# link it on its own, which is also the check that it stayed that way.
+test/tiling_test: test/tiling_test.c src/tiling_layout.c include/tiling.h Makefile
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) \
+	  -o $@ test/tiling_test.c src/tiling_layout.c -lm
 
 clean:
 	rm -f charawc charactl .png-* $(TESTS)

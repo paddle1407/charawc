@@ -216,14 +216,20 @@ reconcile(void)
 
 	wl_list_for_each(c, &wm.clients, link) {
 		struct screen *s = chara_window_screen(c);
+		struct screen *from = c->scr;
+
 		if (!s && !wl_list_empty(&wm.screens))
 			s = wl_container_of(wm.screens.next, s, link);
-		if (s && s != c->scr) {
+		if (s && s != from) {
 			chara_forget_focus(c, s);
 			c->scr = s;
+			/* Its place in the old monitor's layout goes with the move;
+			 * it needs one in the new monitor's. */
+			chara_tiling_reseat(c, from, c->ws);
 		}
 	}
 	chara_sync_windows();
+	chara_tiling_dirty_all();
 }
 
 static void
@@ -231,7 +237,11 @@ on_scr_geometry(void *data)
 {
 	struct screen *s = data;
 
+	/* The bar appearing, or a mode change: every workspace on this monitor
+	 * has a different area to fill than it did. */
 	screen_geometry(s);
+	for (uint8_t ws = 1; ws <= CHARA_WORKSPACES; ++ws)
+		chara_tiling_dirty(s, ws);
 	reconcile();
 }
 
@@ -293,6 +303,7 @@ chara_new_screen(struct swc_screen *scr)
 
 	s->scr = scr;
 	s->ws = 1;
+	chara_tiling_ws_reset(s);
 	screen_geometry(s);
 	wl_list_insert(wm.screens.prev, &s->link);
 	if (!wm.scr)
@@ -370,6 +381,17 @@ reload_now(void *data)
 	update_bar(config.bar.enabled, bar_changed);
 	chara_bind_mouse(config.values.mod);
 
+	/*
+	 * Reloading is an explicit "apply what I have written", so the layouts
+	 * go back to what the configuration says -- including a master ratio a
+	 * fence drag had moved. Which windows are tiled, and the sizes they
+	 * were given within a layout, are the session's and are kept.
+	 */
+	struct screen *screen;
+	wl_list_for_each(screen, &wm.screens, link)
+		chara_tiling_ws_reset(screen);
+	chara_tiling_dirty_all();
+
 	struct client *client;
 	wl_list_for_each(client, &wm.clients, link)
 		chara_decorate(client, wm.cur == client);
@@ -411,6 +433,7 @@ cleanup(void)
 	if (bar_pid > 0)
 		kill(-bar_pid, SIGTERM);
 	chara_startup_finish();
+	chara_tiling_finish();
 	chara_ipc_finish();
 	if (reload_source)
 		wl_event_source_remove(reload_source);
@@ -443,6 +466,7 @@ setup(void)
 		     "this session");
 	if (!chara_startup_init(wm.loop))
 		_err(1, "couldn't set up startup commands");
+	chara_tiling_init(wm.loop);
 
 	reload_source = wl_event_loop_add_timer(wm.loop, reload_now, NULL);
 	wl_event_loop_add_signal(wm.loop, SIGINT, on_signal, NULL);

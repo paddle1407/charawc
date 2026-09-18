@@ -17,6 +17,7 @@
 /src/charawc/charactl
 /src/charawc/.png-*
 /src/charawc/test/focus_test
+/src/charawc/test/tiling_test
 
 # Compiler leftovers
 *.o
@@ -32,3 +33,6 @@ core
 *.swp
 *~
 .DS_Store
+
+# Tiling design notes
+/TILING.md
