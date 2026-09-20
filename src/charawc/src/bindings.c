@@ -202,3 +202,13 @@ chara_bindings_replace(struct config *cfg)
 		wl_list_insert(bindings.prev, &b->link);
 	}
 }
+
+/* Match the installed toggle binding without running any ordinary action. */
+bool chara_binding_is_overview(uint32_t mods, uint32_t key)
+{
+	struct binding *b;
+	wl_list_for_each(b, &bindings, link)
+		if (!b->argv && b->action.command == cmd_overview && b->key == key &&
+		    (b->modifiers == mods || b->modifiers == (uint32_t)SWC_MOD_ANY)) return true;
+	return false;
+}

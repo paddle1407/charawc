@@ -15,9 +15,25 @@
 #include <string.h>
 
 #include "config.h"
+#include <xkbcommon/xkbcommon-keysyms.h>
+#include <linux/input-event-codes.h>
 
 struct wm wm;
 struct config config;
+
+static const struct swc_input_mode_handler *overview_input;
+static struct swc_overview_item overview_items[16];
+static unsigned overview_count;
+bool swc_input_mode_begin(struct swc_screen *s, const struct swc_input_mode_handler *h, void *d)
+{ overview_input = h; return true; }
+void swc_input_mode_end(void) { overview_input = NULL; }
+bool swc_overview_begin(struct swc_screen *s, const struct swc_overview_item *items, unsigned n)
+{ if (n > 16) return false; memcpy(overview_items, items, n * sizeof(*items)); overview_count = n; return true; }
+void swc_overview_end(void) { overview_count = 0; }
+bool swc_window_overview_geometry(struct swc_window *w, struct swc_rectangle *g)
+{ return swc_window_get_geometry(w, g); }
+bool chara_binding_is_overview(uint32_t mods, uint32_t key)
+{ return mods == SWC_MOD_LOGO && key == XKB_KEY_Tab; }
 
 /* Stubs: the window manager talks to swc and to the control socket. */
 static struct swc_screen *fullscreen_on;
@@ -59,6 +75,7 @@ void swc_window_set_pinned(struct swc_window *w, bool p)
 { unsigned i = window_index(w); if (i < 4) pinned_state[i] = p; }
 void swc_window_set_minimized(struct swc_window *w, bool m) {}
 void swc_window_set_workspace(struct swc_window *w, uint32_t ws) {}
+void swc_workspace_set_active(struct swc_screen *s, uint32_t ws) {}
 void swc_window_show(struct swc_window *w) {}
 void swc_window_show_in_place(struct swc_window *w) {}
 void swc_window_hide(struct swc_window *w) {}
@@ -66,12 +83,16 @@ static const struct swc_window *last_raised;
 static unsigned raise_count;
 void swc_window_raise(struct swc_window *w) { last_raised = w; ++raise_count; }
 void swc_window_focus(struct swc_window *w) {}
-void swc_window_close(struct swc_window *w) {}
+static struct swc_window *closed_window;
+void swc_window_close(struct swc_window *w) { closed_window = w; }
 void swc_window_begin_move(struct swc_window *w) {}
 void swc_window_end_move(struct swc_window *w) {}
 void swc_window_begin_resize(struct swc_window *w, uint32_t e) {}
 void swc_window_end_resize(struct swc_window *w) {}
-void swc_window_set_handler(struct swc_window *w, const struct swc_window_handler *h, void *d) {}
+static const struct swc_window_handler *window_handlers[4];
+static void *window_data[4];
+void swc_window_set_handler(struct swc_window *w, const struct swc_window_handler *h, void *d)
+{ unsigned i = window_index(w); if (i < 4) { window_handlers[i] = h; window_data[i] = d; } }
 bool swc_window_get_geometry(const struct swc_window *w, struct swc_rectangle *g)
 {
 	unsigned i = window_index(w);
@@ -81,7 +102,10 @@ bool swc_window_get_geometry(const struct swc_window *w, struct swc_rectangle *g
 	return true;
 }
 struct swc_window *swc_window_at(int32_t x, int32_t y) { return NULL; }
-bool swc_cursor_position(int32_t *x, int32_t *y) { return false; }
+static bool cursor_known;
+static int32_t cursor_x, cursor_y;
+bool swc_cursor_position(int32_t *x, int32_t *y)
+{ if (x) *x = cursor_x; if (y) *y = cursor_y; return cursor_known; }
 int swc_add_binding(enum swc_binding_type t, uint32_t m, uint32_t v,
                     swc_binding_handler h, void *d) { return 0; }
 
@@ -678,9 +702,101 @@ test_tiling_is_per_workspace(void)
 	check("and one sent back to a tiling workspace joins it", b && b->tiled);
 }
 
+static void overview_point(unsigned index)
+{
+	cursor_known = true;
+	cursor_x = wl_fixed_from_int(overview_items[index].rect.x + 3);
+	cursor_y = wl_fixed_from_int(overview_items[index].rect.y + 3);
+	overview_input->motion(NULL, cursor_x, cursor_y);
+}
+
+static void test_overview(void)
+{
+	setup();
+	config.overview = (struct overview_config){ .include_minimized=true, .labels=true,
+	    .inner_gap=8, .outer_gap=30 };
+	chara_tiling_ws_enable(&screens[0], 1, false);
+	chara_tiling_ws_enable(&screens[0], 2, false);
+	chara_tiling_ws_enable(&screens[1], 1, false);
+	chara_new_window(&windows[0]);
+	struct client *a = wm.cur;
+	chara_new_window(&windows[1]);
+	struct client *b = wm.cur;
+	chara_ws_move_to(2, b);
+	chara_minimize(b);
+	wm.scr = &screens[1];
+	chara_new_window(&windows[2]);
+	wm.scr = &screens[0];
+	chara_focus(a);
+	struct swc_rectangle saved[4];
+	memcpy(saved, geometry, sizeof(saved));
+	check("overview opens", chara_overview_toggle());
+	check("monitor scope includes minimized and other workspaces", overview_count == 2);
+	check("overview excludes another monitor", overview_items[1].window == b->win);
+	chara_focus(b);
+	check("ordinary focus cannot steal modal keyboard", wm.cur == a);
+	check("overview does not resize clients", !memcmp(saved, geometry, sizeof(saved)));
+	cursor_known = true;
+	cursor_x = wl_fixed_from_int(2000); cursor_y = wl_fixed_from_int(100);
+	overview_input->motion(NULL, cursor_x, cursor_y);
+	check("crossing to another monitor restores its focus", wm.cur == window_data[2]);
+	check("overview remains on its original monitor", chara_overview_on_screen(&screens[0]) && overview_count == 2);
+	overview_input->button(NULL, BTN_LEFT);
+	check("clicking the other monitor does not dismiss overview", overview_input && overview_count == 2);
+	chara_ws_go_to(&screens[1], 2);
+	check("workspace changes on the other monitor keep overview", overview_input && screens[1].ws == 2);
+	chara_ws_go_to(&screens[1], 1);
+	window_handlers[2]->request_activate(window_data[2]);
+	check("other monitor can activate its windows", wm.cur == window_data[2] && overview_input);
+	check("overview shortcut on other monitor leaves this one alone", chara_overview_toggle() && overview_input);
+	overview_point(0);
+	overview_input->key(NULL, XKB_KEY_Escape, 0);
+	check("Escape removes mode and restores focus", !overview_input && !overview_count && wm.cur == a);
+
+	config.overview.workspace = true;
+	check("workspace scope opens", chara_overview_toggle());
+	check("workspace scope omits other workspaces", overview_count == 1);
+	chara_overview_cancel();
+	config.overview.workspace = false;
+	check("overview opens again", chara_overview_toggle());
+	overview_point(1);
+	overview_input->button(NULL, BTN_RIGHT);
+	check("right click requests close without leaving overview", closed_window == b->win && overview_input);
+	overview_input->key(NULL, XKB_KEY_Tab, SWC_MOD_LOGO);
+	check("hover then Mod+Tab switches workspace and restores window",
+	      screens[0].ws == 2 && !b->minimized && wm.cur == b && !overview_input);
+	cursor_known = false;
+	check("overview can reopen after a pick", chara_overview_toggle());
+	cursor_known = true; cursor_x = cursor_y = 0;
+	overview_input->button(NULL, BTN_LEFT);
+	check("background click cancels", !overview_input && wm.cur == b);
+	cursor_known = false;
+	check("overview enters before forced cancellation", chara_overview_toggle());
+	overview_input->cancel(NULL);
+	check("forced exit removes input and rendering", !overview_input && !overview_count && !chara_overview_active());
+	check("overview opens before cancelling from another output", chara_overview_toggle());
+	cursor_known = true; cursor_x = wl_fixed_from_int(2000); cursor_y = wl_fixed_from_int(100);
+	overview_input->motion(NULL, cursor_x, cursor_y);
+	chara_overview_cancel();
+	check("cancellation preserves focus on the other monitor", wm.cur == window_data[2]);
+	cursor_known = false; wm.scr = &screens[0]; chara_focus(b);
+
+	check("overview enters before new window", chara_overview_toggle());
+	chara_new_window(&windows[3]);
+	check("new window joins without stealing focus", overview_count == 3 && wm.cur == b);
+	window_handlers[3]->destroy(window_data[3]);
+	check("destroyed window leaves the plan", overview_count == 2 && overview_input);
+	window_handlers[1]->destroy(window_data[1]);
+	check("destroying saved focus keeps remaining overview valid", overview_count == 1 && overview_input);
+	window_handlers[0]->destroy(window_data[0]);
+	check("last eligible window closing exits", !overview_input && !chara_overview_active());
+	window_handlers[2]->destroy(window_data[2]);
+}
+
 int
 main(void)
 {
+	test_overview();
 	test_moving_clears_the_old_monitor();
 	test_closing_clears_every_monitor();
 	test_fullscreen_monitor_choice();

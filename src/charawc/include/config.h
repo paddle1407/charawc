@@ -73,6 +73,11 @@ struct bar_config {
 	uint64_t digest;
 };
 
+struct overview_config {
+	bool workspace, include_minimized, labels;
+	int32_t inner_gap, outer_gap;
+};
+
 struct config {
 	struct values values;
 	struct decor *decoration;
@@ -82,6 +87,7 @@ struct config {
 	struct wallpaper wallpaper;
 	struct bar_config bar;
 	struct tiling_config tiling;
+	struct overview_config overview;
 };
 
 /* config.c */
@@ -97,6 +103,14 @@ bool chara_config_write_example(const char *path);
 bool chara_config_bindings(struct config *);
 void chara_config_start(struct config *);
 char *chara_config_path(const char *filename);
+
+/* overview.c: transient, output-only window selection. */
+bool chara_overview_active(void);
+bool chara_overview_on_screen(const struct screen *);
+bool chara_overview_toggle(void);
+void chara_overview_cancel(void);
+void chara_overview_refresh(void);
+bool chara_binding_is_overview(uint32_t modifiers, uint32_t key);
 
 /* bindings.c */
 bool chara_parse_key(const char *, uint32_t mod, uint32_t *mods, uint32_t *key,

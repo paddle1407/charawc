@@ -61,6 +61,8 @@ const struct command commands[cmd_last] = {
 	[cmd_tile_layout_prev] = { "tile_layout_prev", cmd_tile_layout_prev, 0, false, "" },
 	[cmd_tile_master_count] = { "tile_master_count", cmd_tile_master_count, 1, false, "<change>" },
 	[cmd_tile_master_ratio] = { "tile_master_ratio", cmd_tile_master_ratio, 1, false, "<percent>" },
+	[cmd_overview]         = { "overview", cmd_overview, 0, false, "" },
+	[cmd_zoom]             = { "zoom", cmd_zoom, 1, false, "<percent>" },
 	[cmd_get_tiling]       = { "get_tiling", cmd_get_tiling, 0, false, "" },
 	[cmd_get_geometry]     = { "get_geometry", cmd_get_geometry, 0, true, "<window>" },
 	[cmd_get_pid]          = { "get_pid", cmd_get_pid, 0, true, "<window>" },
@@ -220,6 +222,12 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 				return fail("usage: %s %s", cmd->name, cmd->usage);
 		}
 	}
+
+	/* Mutating another monitor leaves the overview in place. Commands aimed
+	 * at its own monitor restore the normal scene before changing it. */
+	struct screen *target = c ? c->scr : chara_active_screen();
+	if (cmd->command != cmd_overview && cmd->command < cmd_get_geometry &&
+	    chara_overview_on_screen(target)) chara_overview_cancel();
 
 	struct swc_rectangle g;
 	char label[CHARA_NAME_MAX + 16];
@@ -383,6 +391,17 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		if (!chara_tiling_master_count(chara_active_screen(), chara_active_ws(),
 		                               a[0]))
 			return fail("the master count would not change");
+		return ok("");
+	case cmd_overview:
+		return chara_overview_toggle() ? ok("") : fail("overview unavailable or no matching windows");
+	case cmd_zoom:
+		/*
+		 * swc clamps to a tenth and ten times over; refusing outside that
+		 * here means `zoom 5` says so rather than quietly becoming `zoom 10`.
+		 */
+		if (a[0] < 10 || a[0] > 1000)
+			return fail("zoom must be between 10 and 1000 percent");
+		swc_set_zoom(a[0] / 100.0f);
 		return ok("");
 	case cmd_tile_master_ratio:
 		if (!chara_tiling_master_ratio(chara_active_screen(), chara_active_ws(),

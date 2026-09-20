@@ -29,7 +29,7 @@ LDFLAGS    += $(EXTRA_LDFLAGS)
 
 SRC   = src/charawc.c src/window.c src/border.c src/ipc.c \
         src/config.c src/bindings.c src/startup.c src/wallpaper.c src/log.c \
-        src/tiling.c src/tiling_layout.c
+        src/tiling.c src/tiling_layout.c src/overview.c src/overview_layout.c
 HDR   = $(wildcard include/*.h)
 
 .PHONY: all clean test
@@ -52,11 +52,11 @@ charactl: src/charactl.c Makefile
 
 # The unit tests link the real window manager sources against stubs, so they
 # run without a compositor, a session or a graphics card.
-TESTS = test/focus_test test/tiling_test
+TESTS = test/focus_test test/tiling_test test/overview_test
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t"; $$t || exit 1; done
 
-FOCUS_SRC = src/window.c src/border.c src/tiling.c src/tiling_layout.c src/log.c
+FOCUS_SRC = src/window.c src/border.c src/tiling.c src/tiling_layout.c src/overview.c src/overview_layout.c src/log.c
 test/focus_test: test/focus_test.c $(FOCUS_SRC) $(HDR) Makefile
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) \
 	  -Wl,-rpath,$(shell $(PKG_CONFIG) --variable=libdir swc) \
@@ -67,6 +67,9 @@ test/focus_test: test/focus_test.c $(FOCUS_SRC) $(HDR) Makefile
 test/tiling_test: test/tiling_test.c src/tiling_layout.c include/tiling.h Makefile
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) \
 	  -o $@ test/tiling_test.c src/tiling_layout.c -lm
+
+test/overview_test: test/overview_test.c src/overview_layout.c include/overview.h Makefile
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test/overview_test.c src/overview_layout.c -lm
 
 clean:
 	rm -f charawc charactl .png-* $(TESTS)

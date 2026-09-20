@@ -36,6 +36,11 @@ enum cmd {
 	cmd_tile_grid, cmd_tile_monocle,
 	cmd_tile_layout_next, cmd_tile_layout_prev,
 	cmd_tile_master_count, cmd_tile_master_ratio,
+	/*
+	 * Screen. Zoom scales the whole monitor about its centre; it is a
+	 * magnifier, so what is under the pointer does not move with it.
+	 */
+	cmd_zoom, cmd_overview,
 	/* queries */
 	cmd_get_geometry, cmd_get_pid, cmd_get_title, cmd_get_app_id,
 	cmd_get_id, cmd_get_focus, cmd_get_workspace, cmd_get_tiling,

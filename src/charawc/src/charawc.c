@@ -313,6 +313,7 @@ static void
 on_scr_geometry(void *data)
 {
 	struct screen *s = data;
+	if (chara_overview_on_screen(s)) chara_overview_cancel();
 
 	/* The bar appearing, or a mode change: every workspace on this monitor
 	 * has a different area to fill than it did. */
@@ -326,6 +327,7 @@ static void
 on_scr_entered(void *data)
 {
 	struct screen *s = data;
+	if (chara_overview_on_screen(s)) return;
 
 	wm.scr = s;
 	/* Mid-drag the pointer is carrying a window across, so the monitor it
@@ -345,6 +347,7 @@ static void
 on_scr_destroy(void *data)
 {
 	struct screen *s = data;
+	if (chara_overview_on_screen(s)) chara_overview_cancel();
 	struct client *c;
 
 	wl_list_remove(&s->link);
@@ -440,6 +443,7 @@ reload_now(void *data)
 		chara_config_finish(&next);
 		return 0;
 	}
+	chara_overview_cancel();
 	swc_binding_batch_commit(batch);
 	chara_bindings_replace(&next);
 
@@ -512,6 +516,7 @@ on_signal(int number, void *data)
 static void
 cleanup(void)
 {
+	chara_overview_cancel();
 	if (bar_pid > 0)
 		kill(-bar_pid, SIGTERM);
 	chara_startup_finish();

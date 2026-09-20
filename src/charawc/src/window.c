@@ -154,6 +154,8 @@ chara_forget_focus(const struct client *c, const struct screen *keep)
 void
 chara_focus(struct client *c)
 {
+	if (chara_overview_on_screen(chara_active_screen()) ||
+	    (c && chara_overview_on_screen(c->scr))) return;
 	struct client *previous = wm.cur;
 
 	if (c && c->scr)
@@ -212,6 +214,7 @@ chara_sync_windows(void)
 		else
 			swc_window_hide(c->win);
 	}
+	chara_overview_refresh();
 }
 
 void
@@ -605,7 +608,7 @@ on_entered(void *data)
 {
 	struct client *c = data;
 
-	if (wm.grab.active || !c->visible)
+	if (chara_overview_on_screen(c->scr) || wm.grab.active || !c->visible)
 		return;
 	/* Laying out slides windows about under a pointer that has not moved,
 	 * and the enter that follows is the layout's doing, not the user's. */
@@ -636,6 +639,7 @@ on_destroy(void *data)
 
 	wl_list_remove(&c->link);
 	free(c);
+	chara_overview_refresh();
 
 	if (s)
 		chara_focus(chara_first_on(s));
@@ -694,6 +698,7 @@ static void
 on_request_activate(void *data)
 {
 	struct client *c = data;
+	if (chara_overview_on_screen(c->scr)) return;
 
 	if (c->minimized)
 		chara_restore(c);
@@ -772,7 +777,10 @@ on_request_resize(void *data)
 	chara_set_maximized(c, false);
 }
 
+static void on_geometry(void *data) { chara_overview_refresh(); }
+
 static const struct swc_window_handler win_handler = {
+	.geometry_changed = on_geometry,
 	.destroy = on_destroy,
 	.title_changed = on_title,
 	.app_id_changed = on_app_id,
@@ -835,6 +843,7 @@ chara_new_window(struct swc_window *win)
 		chara_tiling_set(c, true);
 	swc_window_show(win);
 	chara_focus(c);
+	chara_overview_refresh();
 }
 
 /* ----------------------------------------------------------- mod + drag */

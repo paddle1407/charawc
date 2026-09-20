@@ -285,7 +285,7 @@ default_bindings(struct config *cfg)
 	    !default_binding(cfg, "mod+m", cmd_minimize, 0, NULL) ||
 	    !default_binding(cfg, "mod+n", cmd_restore, 0, NULL) ||
 	    !default_binding(cfg, "mod+c", cmd_center, 0, NULL) ||
-	    !default_binding(cfg, "mod+Tab", cmd_focus_next, 0, NULL) ||
+	    !default_binding(cfg, "mod+Tab", cmd_overview, 0, NULL) ||
 	    !default_binding(cfg, "mod+shift+Tab", cmd_focus_prev, 0, NULL) ||
 	    !default_binding(cfg, "mod+shift+r", cmd_reload, 0, NULL) ||
 	    !default_binding(cfg, "mod+shift+e", cmd_quit, 0, NULL) ||
@@ -724,6 +724,39 @@ parse_appearance(lua_State *L, struct config *cfg, int index, const char *filena
 	}
 }
 
+static void
+parse_overview(lua_State *L, struct config *cfg, int index)
+{
+	static const char *scopes[] = { "monitor", "workspace", NULL };
+	struct overview_config *o = &cfg->overview;
+	FIELDS(L, index, "overview", "scope", "gaps", "include_minimized", "labels");
+	if (field(L, index, "scope")) {
+		o->workspace = one_of(L, -1, "overview.scope", scopes) == 1;
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "include_minimized")) {
+		o->include_minimized = boolean(L, -1, "overview.include_minimized");
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "labels")) {
+		o->labels = boolean(L, -1, "overview.labels");
+		lua_pop(L, 1);
+	}
+	if (field(L, index, "gaps")) {
+		int g = lua_gettop(L);
+		FIELDS(L, g, "overview.gaps", "inner", "outer");
+		if (field(L, g, "inner")) {
+			o->inner_gap = integer(L, -1, "overview.gaps.inner", 0, 512);
+			lua_pop(L, 1);
+		}
+		if (field(L, g, "outer")) {
+			o->outer_gap = integer(L, -1, "overview.gaps.outer", 1, 512);
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
+	}
+}
+
 /* --------------------------------------------------------------- tiling */
 
 static void
@@ -1085,7 +1118,7 @@ parse(lua_State *L)
 
 	int root = lua_gettop(L);
 	FIELDS(L, root, "config", "mod", "raise_on_hover",
-	       "fullscreen_follows_client", "appearance", "bar", "tiling",
+	       "fullscreen_follows_client", "appearance", "bar", "tiling", "overview",
 	       "bindings", "rules", "exec_once", "exec", "monitors");
 
 	if (field(L, root, "mod")) {
@@ -1105,6 +1138,7 @@ parse(lua_State *L)
 	}
 	if (field(L, root, "appearance")) { parse_appearance(L, cfg, -1, filename); lua_pop(L, 1); }
 	if (field(L, root, "bar")) { parse_bar(L, cfg, -1); lua_pop(L, 1); }
+	if (field(L, root, "overview")) { parse_overview(L, cfg, -1); lua_pop(L, 1); }
 	if (field(L, root, "tiling")) { parse_tiling(L, cfg, -1); lua_pop(L, 1); }
 	if (field(L, root, "bindings")) {
 		int t = lua_gettop(L), n = array(L, t, "bindings", 4096);
@@ -1158,6 +1192,8 @@ chara_config_init(struct config *cfg)
 		},
 		.title_format = strdup("%t"),
 	};
+	cfg->overview = (struct overview_config){ .include_minimized = true,
+	    .labels = true, .inner_gap = 8, .outer_gap = 30 };
 	cfg->tiling = (struct tiling_config){
 		/* Off by default: charaWC has always opened windows floating, and
 		 * turning that over on an upgrade would be a surprise. */
@@ -1449,11 +1485,16 @@ static const char config_example[] =
 	"		resize_step = 40,  -- pixels a keyboard resize moves a fence\n"
 	"	},\n"
 	"\n"
+	"	overview = {\n"
+	"		scope = \"monitor\", -- or \"workspace\"\n"
+	"		gaps = { inner = 8, outer = 30 },\n"
+	"		include_minimized = true, labels = true,\n"
+	"	},\n"
 	"	bindings = {\n"
 	"		{ key = \"mod+Return\", spawn = { \"foot\" } },\n"
 	"		{ key = \"mod+q\", action = \"close\" },\n"
 	"		{ key = \"mod+f\", action = \"maximize\" },\n"
-	"		{ key = \"mod+Tab\", action = \"focus_next\" },\n"
+	"		{ key = \"mod+Tab\", action = \"overview\" },\n"
 	"		{ key = \"mod+shift+Tab\", action = \"focus_prev\" },\n"
 	"\n"
 	"		-- Tiling. focus_* works whether the window is tiled or not.\n"

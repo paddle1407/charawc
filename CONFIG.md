@@ -220,6 +220,59 @@ jump out of the grid before you saw them in it.
 
 ---
 
+## Overview
+
+`overview` toggles a packed view of windows on the active monitor. The default
+binding is **Mod+Tab**. Windows retain their geometry and state; the compositor
+scales their latest available buffers, including retained frames from hidden
+workspaces and minimized windows. Every eligible window is included, shrinking
+to fit without a count cap or pagination.
+
+```lua
+overview = {
+    scope = "monitor", -- "monitor" or "workspace"
+    gaps = { inner = 8, outer = 30 },
+    include_minimized = true,
+    labels = true,
+},
+```
+
+`monitor` includes all workspaces on the active monitor; `workspace` includes
+only that monitor's current workspace. Other monitors keep their normal view.
+Outer gaps must be at least 1 pixel, leaving background space to cancel. The
+layout uses the monitor's usable area so the bar remains visible. With extreme
+window counts or a tiny output, labels and gaps are reduced before any window
+would be omitted. If even one pixel per window cannot fit, overview does not
+open.
+
+- Hover highlights a thumbnail. Left-click selects it, switches to its workspace,
+  restores it if minimized, and focuses it.
+- Right-click requests that the window close. The overview stays open while the
+  client handles the request.
+- Mod+Tab again selects the highlighted window. Open overview, hover a window,
+  then press Mod+Tab to switch to it without clicking.
+- Escape or left-clicking the overview background cancels and restores the
+  previous focus when that window still exists and is visible.
+- Arrows or hjkl move the selection. Tab / Shift+Tab cycle; Enter selects.
+
+Overview captures input only while the pointer is on its monitor. Other monitors
+remain usable: clicks, typing, scrolling, and shortcuts work normally, and their
+workspace changes leave overview open. Returning to the overview monitor resumes
+selection. One overview can be open at a time; Mod+Tab on another monitor leaves
+the existing overview alone.
+
+VT switching remains available. Session lock, VT deactivation, changes to the
+overview monitor, configuration reload, and `charactl` mutations targeting that
+monitor end the mode. Cancelling from another monitor preserves its focus.
+New windows join the layout; closed windows leave it. Minimized windows carry a
+label, or a small marker when labels are disabled.
+
+A custom bindings list replaces the defaults, so add this entry when using one:
+
+```lua
+{ key = "mod+Tab", action = "overview" },
+```
+
 ## Borders
 
 Borders are drawn as rings around the window, innermost first. Each ring has
@@ -655,6 +708,18 @@ restore it first.
 | `tile_layout_next`, `tile_layout_prev` | — |
 | `tile_master_count` | `<change>` |
 | `tile_master_ratio` | `<percent>` |
+
+### Screen
+
+| Command | Arguments |
+| --- | --- |
+| `overview` | Toggle window overview on the active monitor. |
+| `zoom` | `<percent>` — 100 is normal, 10 to 1000. Scales the monitor about its centre. |
+
+Zoom is a magnifier over the whole screen: the pointer and the keyboard still
+go where the windows really are, not where they are drawn. A panel or a status
+bar keeps its real size, so the furniture around the desktop does not shrink
+with it.
 
 ### Queries
 

@@ -1,25 +1,16 @@
-# Build tree produced by ./build.sh
+# Local builds and scratch files
 /prefix/
-
-# Scratch / experiments
 /temp/
-/TODO.md
-
-# src/libspng, src/neuswc and src/neuwld are git submodules — tracked as
-# pinned commits, not files. Their own .gitignore handles their build output.
-
-# Generated wayland-scanner sources
 /src/charabar/build/
 
-# Binaries
+# Executables and build stamps
 /src/charabar/charabar
 /src/charawc/charawc
 /src/charawc/charactl
 /src/charawc/.png-*
-/src/charawc/test/focus_test
-/src/charawc/test/tiling_test
+/src/charawc/test/*_test
 
-# Compiler leftovers
+# Compiler output and crash dumps
 *.o
 *.a
 *.so
@@ -27,12 +18,5 @@
 *.d
 *.gcda
 *.gcno
-core
-
-# Editor / OS noise
-*.swp
-*~
-.DS_Store
-
-# Tiling design notes
-/TILING.md
+/core
+/core.[0-9]*
