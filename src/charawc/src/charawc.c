@@ -16,6 +16,10 @@ struct config config;
 
 static char *config_path;
 static bool reload_queued;
+/* Set once startup has applied the configuration; a monitor that appears
+ * after that has to be caught up on it. */
+static bool started;
+static bool wallpaper_queued;
 static struct wl_event_source *reload_source;
 static pid_t bar_pid;
 static bool bar_restarting;
@@ -210,6 +214,26 @@ apply_wallpaper(void)
 		_wrn("wallpaper: couldn't prepare the background");
 }
 
+/* The wallpaper is scaled per monitor, so a monitor plugged in later has none
+ * until it is prepared again. Deferred: new_screen runs before swc lists the
+ * screen, and a prepare then would not see it. */
+static void
+apply_wallpaper_idle(void *data)
+{
+	(void)data;
+	wallpaper_queued = false;
+	apply_wallpaper();
+}
+
+static void
+queue_wallpaper(void)
+{
+	if (wallpaper_queued || !wm.loop)
+		return;
+	if (wl_event_loop_add_idle(wm.loop, apply_wallpaper_idle, NULL))
+		wallpaper_queued = true;
+}
+
 /* ------------------------------------------------------------------ bar */
 
 static void
@@ -343,22 +367,116 @@ on_scr_entered(void *data)
 		chara_focus(next);
 }
 
+/*
+ * Carry a point on one monitor to the same place on another, then pull the
+ * rectangle back inside it if that one is smaller. Left and top win when it
+ * does not fit at all.
+ */
+static void
+translate_into(int32_t *x, int32_t *y, uint32_t width, uint32_t height,
+               const struct screen *from, const struct screen *to)
+{
+	const struct swc_rectangle *area = &to->scr->usable_geometry;
+	int64_t nx = (int64_t)*x - from->x + to->x;
+	int64_t ny = (int64_t)*y - from->y + to->y;
+
+	if (nx + width > (int64_t)area->x + area->width)
+		nx = (int64_t)area->x + area->width - width;
+	if (ny + height > (int64_t)area->y + area->height)
+		ny = (int64_t)area->y + area->height - height;
+	if (nx < area->x)
+		nx = area->x;
+	if (ny < area->y)
+		ny = area->y;
+	*x = (int32_t)nx;
+	*y = (int32_t)ny;
+}
+
+/*
+ * A window whose monitor was unplugged. Windows on the workspace that monitor
+ * was showing land on the one `to` is showing, so what was in view stays in
+ * view; the rest keep their workspace number. Floating windows keep their
+ * place relative to the monitor: left at the old coordinates they would sit
+ * where no monitor is, with nothing to bring them back.
+ */
+static void
+rehome(struct client *c, struct screen *from, struct screen *to)
+{
+	uint8_t from_ws = c->ws;
+
+	chara_forget_focus(c, to);
+	c->scr = to;
+	if (c->ws == from->ws && c->ws != to->ws) {
+		c->ws = to->ws;
+		swc_window_set_workspace(c->win, c->ws);
+	}
+	translate_into(&c->x, &c->y, c->width, c->height, from, to);
+	translate_into(&c->floating.x, &c->floating.y, c->floating.width,
+	               c->floating.height, from, to);
+	if (c->fullscreen || c->maximized) {
+		chara_update_mode_geometry(c);
+	} else if (!c->tiled) {
+		struct swc_rectangle g = { c->x, c->y, c->width, c->height };
+		swc_window_set_geometry(c->win, &g);
+	}
+	/* The old monitor is gone, so there is no layout to leave; only one on
+	 * this monitor to join. */
+	chara_tiling_reseat(c, NULL, from_ws);
+	if (wm.cur == c)
+		to->focus = c;
+}
+
 static void
 on_scr_destroy(void *data)
 {
-	struct screen *s = data;
-	if (chara_overview_on_screen(s)) chara_overview_cancel();
+	struct screen *s = data, *to;
+	const char *name = swc_screen_get_name(s->scr);
+	struct monitor_config *m;
 	struct client *c;
 
+	/* Shutting down: swc tears every screen down after the compositor, and
+	 * there is nowhere to move anything to. */
+	if (!wm.running) {
+		wl_list_remove(&s->link);
+		wl_list_for_each(c, &wm.clients, link)
+			if (c->scr == s)
+				c->scr = NULL;
+		if (wm.scr == s)
+			wm.scr = NULL;
+		free(s);
+		return;
+	}
+	if (chara_overview_on_screen(s)) chara_overview_cancel();
+
+	/* Plugged back in, it should go back where the configuration puts it. */
+	wl_list_for_each(m, &config.monitors, link) {
+		if (name && m->matched && !strcmp(m->name, name)) {
+			m->matched = false;
+			break;
+		}
+	}
+
 	wl_list_remove(&s->link);
-	wl_list_for_each(c, &wm.clients, link)
-		if (c->scr == s)
+	to = wl_list_empty(&wm.screens) ? NULL
+	    : wl_container_of(wm.screens.next, to, link);
+	wl_list_for_each(c, &wm.clients, link) {
+		if (c->scr != s)
+			continue;
+		if (to)
+			rehome(c, s, to);
+		else
 			c->scr = NULL;
+	}
 	if (wm.scr == s)
-		wm.scr = wl_list_empty(&wm.screens) ? NULL
-		    : wl_container_of(wm.screens.next, wm.scr, link);
+		wm.scr = to;
 	free(s);
 	reconcile();
+	/* The focused window may have been on a workspace of the old monitor
+	 * that is not showing here. */
+	if (wm.cur && !wm.cur->visible && wm.scr)
+		chara_focus(chara_first_on(wm.scr));
+	if (name)
+		_inf("monitor %s: removed", name);
 }
 
 static const struct swc_screen_handler scr_handler = {
@@ -397,6 +515,9 @@ chara_new_screen(struct swc_screen *scr)
 	swc_workspace_set_active(scr, s->ws);
 	_inf("monitor %s: %dx%d at %d,%d", name ? name : "?", s->width, s->height,
 	     s->x, s->y);
+	/* Plugged in while running. */
+	if (started)
+		queue_wallpaper();
 }
 
 /* A desktop shell asked for a workspace on one monitor. */
@@ -669,10 +790,13 @@ main(int argc, char **argv)
 	chara_bind_mouse(config.values.mod);
 	load_cursor_theme();
 	apply_wallpaper();
+	started = true;
 	update_bar(config.bar.enabled, false);
 	chara_config_start(&config);
 
 	wl_display_run(wm.dpy);
+	/* swc can end the loop itself (Ctrl+Alt+Backspace), without chara_stop. */
+	wm.running = false;
 
 	cleanup();
 	chara_config_finish(&config);
