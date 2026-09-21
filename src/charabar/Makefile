@@ -18,13 +18,18 @@ GEN_HEADERS := $(addprefix $(BUILD)/,$(addsuffix .h,$(PROTOCOLS)))
 GEN_CODE := $(addprefix $(BUILD)/,$(addsuffix .c,$(PROTOCOLS)))
 
 CFLAGS += -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Wshadow -Wpedantic
-CPPFLAGS += -I$(BUILD) $(shell $(PKG_CONFIG) --cflags wayland-client cairo pangocairo $(LUA_PKG))
+# ../charawc/include/bar_schema.h is the [bar] config schema charaWC's own
+# config.c validates against; charabar includes it rather than keeping its
+# own copy of the bounds and option lists.
+CPPFLAGS += -I$(BUILD) -I../charawc/include $(shell $(PKG_CONFIG) --cflags wayland-client cairo pangocairo $(LUA_PKG))
 LDLIBS += $(shell $(PKG_CONFIG) --libs wayland-client cairo pangocairo $(LUA_PKG))
+
+BAR_SCHEMA := ../charawc/include/bar_schema.h
 
 .PHONY: all clean
 all: charabar
 
-charabar: charabar.c $(GEN_HEADERS) $(GEN_CODE)
+charabar: charabar.c $(GEN_HEADERS) $(GEN_CODE) $(BAR_SCHEMA)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ charabar.c $(GEN_CODE) $(LDLIBS)
 
 $(BUILD):

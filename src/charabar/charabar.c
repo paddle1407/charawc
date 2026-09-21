@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 
+#include "bar_schema.h"
 #include "layer-shell.h"
 #include "toplevel.h"
 #include "workspace.h"
@@ -323,16 +324,19 @@ static unsigned lua_enum_field(lua_State *L, int index, const char *name,
 
 static enum module_type module_from_name(const char *name, bool *valid)
 {
-	static const struct { const char *name; enum module_type type; } names[] = {
-		{ "workspaces", MODULE_WORKSPACES }, { "window", MODULE_WINDOW },
-		{ "taskbar", MODULE_TASKBAR }, { "clock", MODULE_CLOCK },
-		{ "cpu", MODULE_CPU }, { "memory", MODULE_MEMORY },
-		{ "network", MODULE_NETWORK }, { "volume", MODULE_VOLUME },
+	/* Positionally matched to bar_module_names in bar_schema.h, which is
+	 * also what charaWC's config.c validates a module name against; the
+	 * static assert catches a name added there without a type added here. */
+	static const enum module_type types[] = {
+		MODULE_WORKSPACES, MODULE_WINDOW, MODULE_TASKBAR, MODULE_CLOCK,
+		MODULE_CPU, MODULE_MEMORY, MODULE_NETWORK, MODULE_VOLUME,
 	};
-	for (size_t i = 0; i < sizeof(names) / sizeof(*names); ++i)
-		if (!strcmp(name, names[i].name)) {
+	_Static_assert(sizeof(types) / sizeof(*types) == BAR_OPTION_COUNT(bar_module_names),
+	               "bar_module_names and module_from_name types must match");
+	for (size_t i = 0; i < sizeof(types) / sizeof(*types); ++i)
+		if (!strcmp(name, bar_module_names[i])) {
 			*valid = true;
-			return names[i].type;
+			return types[i];
 		}
 	*valid = false;
 	return MODULE_CLOCK;
@@ -373,7 +377,8 @@ static void parse_timed(lua_State *L, int bar, const char *name, char *format,
 		return;
 	if (lua_istable(L, -1)) {
 		lua_string_field(L, -1, "format", format, format_size);
-		*interval = lua_uint_field(L, -1, "interval", *interval, 1, 3600);
+		*interval = lua_uint_field(L, -1, "interval", *interval,
+			BAR_TIMED_INTERVAL_MIN, BAR_TIMED_INTERVAL_MAX);
 	}
 	lua_pop(L, 1);
 }
@@ -529,9 +534,12 @@ static bool config_load(const char *path, struct bar_config *config)
 			config->exclusive = lua_toboolean(L, -1);
 		lua_pop(L, 1);
 	}
-	config->height = lua_uint_field(L, bar, "height", config->height, 16, 128);
-	config->padding = lua_uint_field(L, bar, "padding", config->padding, 0, 128);
-	config->spacing = lua_uint_field(L, bar, "spacing", config->spacing, 0, 128);
+	config->height = lua_uint_field(L, bar, "height", config->height,
+		BAR_HEIGHT_MIN, BAR_HEIGHT_MAX);
+	config->padding = lua_uint_field(L, bar, "padding", config->padding,
+		BAR_PADDING_MIN, BAR_PADDING_MAX);
+	config->spacing = lua_uint_field(L, bar, "spacing", config->spacing,
+		BAR_SPACING_MIN, BAR_SPACING_MAX);
 	lua_string_field(L, bar, "font", config->font, sizeof(config->font));
 	struct { const char *name; uint32_t *value; } colors[] = {
 		{ "background", &config->background }, { "foreground", &config->foreground },
@@ -552,7 +560,8 @@ static bool config_load(const char *path, struct bar_config *config)
 	if (lua_field(L, bar, "workspaces")) {
 		if (lua_istable(L, -1)) {
 			config->workspace_count = lua_uint_field(L, -1, "count",
-				config->workspace_count, 1, 9);
+				config->workspace_count,
+				BAR_WORKSPACES_COUNT_MIN, BAR_WORKSPACES_COUNT_MAX);
 			lua_string_field(L, -1, "format", config->workspace_format,
 			                 sizeof(config->workspace_format));
 		}
@@ -561,7 +570,8 @@ static bool config_load(const char *path, struct bar_config *config)
 	if (lua_field(L, bar, "window")) {
 		if (lua_istable(L, -1)) {
 			config->window_max = lua_uint_field(L, -1, "max_length",
-				config->window_max, 1, 512);
+				config->window_max,
+				BAR_WINDOW_MAX_LENGTH_MIN, BAR_WINDOW_MAX_LENGTH_MAX);
 			lua_string_field(L, -1, "empty", config->window_empty,
 			                 sizeof(config->window_empty));
 		}
@@ -569,21 +579,23 @@ static bool config_load(const char *path, struct bar_config *config)
 	}
 	if (lua_field(L, bar, "taskbar")) {
 		if (lua_istable(L, -1)) {
-			static const char *const scopes[] = { "workspace", "monitor", "all" };
-			static const char *const overflows[] = { "shrink", "scroll", "none" };
 			config->taskbar_max = lua_uint_field(L, -1, "max_length",
-				config->taskbar_max, 1, 128);
-			config->taskbar_scope = lua_enum_field(L, -1, "scope", scopes,
-				sizeof(scopes) / sizeof(*scopes), config->taskbar_scope);
+				config->taskbar_max,
+				BAR_TASKBAR_MAX_LENGTH_MIN, BAR_TASKBAR_MAX_LENGTH_MAX);
+			config->taskbar_scope = lua_enum_field(L, -1, "scope", bar_taskbar_scopes,
+				BAR_OPTION_COUNT(bar_taskbar_scopes), config->taskbar_scope);
 			config->taskbar_overflow = lua_enum_field(L, -1, "overflow",
-				overflows, sizeof(overflows) / sizeof(*overflows),
+				bar_taskbar_overflows, BAR_OPTION_COUNT(bar_taskbar_overflows),
 				config->taskbar_overflow);
 			config->taskbar_min_width = lua_uint_field(L, -1, "min_width",
-				config->taskbar_min_width, 16, 512);
+				config->taskbar_min_width,
+				BAR_TASKBAR_MIN_WIDTH_MIN, BAR_TASKBAR_MIN_WIDTH_MAX);
 			config->taskbar_max_width = lua_uint_field(L, -1, "max_width",
-				config->taskbar_max_width, 0, 16384);
+				config->taskbar_max_width,
+				BAR_TASKBAR_MAX_WIDTH_MIN, BAR_TASKBAR_MAX_WIDTH_MAX);
 			config->taskbar_scroll_step = lua_uint_field(L, -1, "scroll_step",
-				config->taskbar_scroll_step, 1, 1024);
+				config->taskbar_scroll_step,
+				BAR_TASKBAR_SCROLL_STEP_MIN, BAR_TASKBAR_SCROLL_STEP_MAX);
 		}
 		lua_pop(L, 1);
 	}
@@ -600,7 +612,8 @@ static bool config_load(const char *path, struct bar_config *config)
 			lua_string_field(L, -1, "format_offline", config->network_offline,
 			                 sizeof(config->network_offline));
 			config->network_interval = lua_uint_field(L, -1, "interval",
-				config->network_interval, 1, 3600);
+				config->network_interval,
+				BAR_TIMED_INTERVAL_MIN, BAR_TIMED_INTERVAL_MAX);
 		}
 		lua_pop(L, 1);
 	}
@@ -612,7 +625,8 @@ static bool config_load(const char *path, struct bar_config *config)
 			                 sizeof(config->volume_muted));
 			/* 0 disables polling: refresh only on SIGUSR1. */
 			config->volume_interval = lua_uint_field(L, -1, "interval",
-				config->volume_interval, 0, 3600);
+				config->volume_interval,
+				BAR_VOLUME_INTERVAL_MIN, BAR_VOLUME_INTERVAL_MAX);
 		}
 		lua_pop(L, 1);
 	}
