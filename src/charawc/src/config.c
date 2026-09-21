@@ -13,6 +13,7 @@
 #include <lua.h>
 #include <lualib.h>
 
+#include "bar_schema.h"
 #include "config.h"
 
 #if LUA_VERSION_NUM < 502
@@ -963,12 +964,6 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 {
 	static const char *const positions[] = { "top", "bottom", NULL };
 	static const char *const layers[] = { "top", "bottom", NULL };
-	static const char *const module_names[] = {
-		"workspaces", "window", "taskbar", "clock", "cpu", "memory",
-		"network", "volume", NULL
-	};
-	static const char *const scopes[] = { "workspace", "monitor", "all", NULL };
-	static const char *const overflows[] = { "shrink", "scroll", "none", NULL };
 
 	index = lua_absindex(L, index);
 	FIELDS(L, index, "bar", "enabled", "position", "layer", "height",
@@ -979,7 +974,7 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 	if (field(L, index, "enabled")) { cfg->bar.enabled = boolean(L, -1, "bar.enabled"); lua_pop(L, 1); }
 	if (field(L, index, "position")) { one_of(L, -1, "bar.position", positions); lua_pop(L, 1); }
 	if (field(L, index, "layer")) { one_of(L, -1, "bar.layer", layers); lua_pop(L, 1); }
-	if (field(L, index, "height")) { integer(L, -1, "bar.height", 16, 128); lua_pop(L, 1); }
+	if (field(L, index, "height")) { integer(L, -1, "bar.height", BAR_HEIGHT_MIN, BAR_HEIGHT_MAX); lua_pop(L, 1); }
 	if (field(L, index, "exclusive")) { boolean(L, -1, "bar.exclusive"); lua_pop(L, 1); }
 
 	const char *colors[] = { "background", "foreground", "accent", "muted" };
@@ -990,8 +985,8 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 		}
 	}
 	bar_string(L, index, "font", "bar.font", false);
-	if (field(L, index, "padding")) { integer(L, -1, "bar.padding", 0, 128); lua_pop(L, 1); }
-	if (field(L, index, "spacing")) { integer(L, -1, "bar.spacing", 0, 128); lua_pop(L, 1); }
+	if (field(L, index, "padding")) { integer(L, -1, "bar.padding", BAR_PADDING_MIN, BAR_PADDING_MAX); lua_pop(L, 1); }
+	if (field(L, index, "spacing")) { integer(L, -1, "bar.spacing", BAR_SPACING_MIN, BAR_SPACING_MAX); lua_pop(L, 1); }
 
 	if (field(L, index, "modules")) {
 		int modules = lua_gettop(L);
@@ -1003,7 +998,7 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 			int n = array(L, -1, "bar.modules section", 16);
 			for (int i = 1; i <= n; ++i) {
 				lua_rawgeti(L, -1, i);
-				one_of(L, -1, "bar.modules entry", module_names);
+				one_of(L, -1, "bar.modules entry", bar_module_names);
 				lua_pop(L, 1);
 			}
 			lua_pop(L, 1);
@@ -1013,7 +1008,7 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 	if (field(L, index, "workspaces")) {
 		int t = lua_gettop(L);
 		FIELDS(L, t, "bar.workspaces", "count", "format");
-		if (field(L, t, "count")) { integer(L, -1, "bar.workspaces.count", 1, CHARA_WORKSPACES); lua_pop(L, 1); }
+		if (field(L, t, "count")) { integer(L, -1, "bar.workspaces.count", BAR_WORKSPACES_COUNT_MIN, BAR_WORKSPACES_COUNT_MAX); lua_pop(L, 1); }
 		bar_string(L, t, "format", "bar.workspaces.format", false);
 		lua_pop(L, 1);
 	}
@@ -1021,19 +1016,19 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 		int t = lua_gettop(L);
 		FIELDS(L, t, "bar.window", "empty", "max_length");
 		bar_string(L, t, "empty", "bar.window.empty", true);
-		if (field(L, t, "max_length")) { integer(L, -1, "bar.window.max_length", 1, 512); lua_pop(L, 1); }
+		if (field(L, t, "max_length")) { integer(L, -1, "bar.window.max_length", BAR_WINDOW_MAX_LENGTH_MIN, BAR_WINDOW_MAX_LENGTH_MAX); lua_pop(L, 1); }
 		lua_pop(L, 1);
 	}
 	if (field(L, index, "taskbar")) {
 		int t = lua_gettop(L);
 		FIELDS(L, t, "bar.taskbar", "max_length", "scope", "overflow",
 		       "min_width", "max_width", "scroll_step");
-		if (field(L, t, "max_length")) { integer(L, -1, "bar.taskbar.max_length", 1, 128); lua_pop(L, 1); }
-		if (field(L, t, "scope")) { one_of(L, -1, "bar.taskbar.scope", scopes); lua_pop(L, 1); }
-		if (field(L, t, "overflow")) { one_of(L, -1, "bar.taskbar.overflow", overflows); lua_pop(L, 1); }
-		if (field(L, t, "min_width")) { integer(L, -1, "bar.taskbar.min_width", 16, 512); lua_pop(L, 1); }
-		if (field(L, t, "max_width")) { integer(L, -1, "bar.taskbar.max_width", 0, 16384); lua_pop(L, 1); }
-		if (field(L, t, "scroll_step")) { integer(L, -1, "bar.taskbar.scroll_step", 1, 1024); lua_pop(L, 1); }
+		if (field(L, t, "max_length")) { integer(L, -1, "bar.taskbar.max_length", BAR_TASKBAR_MAX_LENGTH_MIN, BAR_TASKBAR_MAX_LENGTH_MAX); lua_pop(L, 1); }
+		if (field(L, t, "scope")) { one_of(L, -1, "bar.taskbar.scope", bar_taskbar_scopes); lua_pop(L, 1); }
+		if (field(L, t, "overflow")) { one_of(L, -1, "bar.taskbar.overflow", bar_taskbar_overflows); lua_pop(L, 1); }
+		if (field(L, t, "min_width")) { integer(L, -1, "bar.taskbar.min_width", BAR_TASKBAR_MIN_WIDTH_MIN, BAR_TASKBAR_MIN_WIDTH_MAX); lua_pop(L, 1); }
+		if (field(L, t, "max_width")) { integer(L, -1, "bar.taskbar.max_width", BAR_TASKBAR_MAX_WIDTH_MIN, BAR_TASKBAR_MAX_WIDTH_MAX); lua_pop(L, 1); }
+		if (field(L, t, "scroll_step")) { integer(L, -1, "bar.taskbar.scroll_step", BAR_TASKBAR_SCROLL_STEP_MIN, BAR_TASKBAR_SCROLL_STEP_MAX); lua_pop(L, 1); }
 		lua_pop(L, 1);
 	}
 
@@ -1058,7 +1053,8 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 		 * poll". The others have no such trigger and would simply freeze. */
 		if (field(L, t, "interval")) {
 			integer(L, -1, "bar module interval",
-			        strcmp(timed[i], "volume") ? 1 : 0, 3600);
+			        strcmp(timed[i], "volume") ? BAR_TIMED_INTERVAL_MIN : BAR_VOLUME_INTERVAL_MIN,
+			        BAR_TIMED_INTERVAL_MAX);
 			lua_pop(L, 1);
 		}
 		lua_pop(L, 1);
