@@ -793,10 +793,148 @@ static void test_overview(void)
 	window_handlers[2]->destroy(window_data[2]);
 }
 
+/* Return/KP_Enter, plain Tab/ISO_Left_Tab stepping (as opposed to the
+ * Mod+Tab shortcut, which picks through chara_overview_toggle() instead),
+ * the label-strip hit test in at(), and button() with no cursor position. */
+static void
+test_overview_keys(void)
+{
+	struct client *a, *b;
+
+	setup();
+	cursor_known = false;
+	config.overview = (struct overview_config){ .include_minimized = true,
+	    .labels = true, .inner_gap = 8, .outer_gap = 30 };
+	geometry[0] = (struct swc_rectangle){0, 0, 200, 200}; geometry_set[0] = true;
+	geometry[1] = (struct swc_rectangle){0, 0, 200, 200}; geometry_set[1] = true;
+	a = add_client(0, &screens[0]);
+	b = add_client(1, &screens[0]);
+	chara_focus(a);
+
+	check("overview opens for the key tests", chara_overview_toggle());
+	check("focus starts the selection", overview_items[0].highlighted);
+
+	overview_input->key(NULL, XKB_KEY_Tab, 0);
+	check("plain Tab steps the selection forward", overview_items[1].highlighted);
+	overview_input->key(NULL, XKB_KEY_Tab, 0);
+	check("Tab wraps back round", overview_items[0].highlighted);
+	overview_input->key(NULL, XKB_KEY_Tab, SWC_MOD_SHIFT);
+	check("Shift+Tab steps backward", overview_items[1].highlighted);
+	overview_input->key(NULL, XKB_KEY_ISO_Left_Tab, 0);
+	check("ISO_Left_Tab also steps backward", overview_items[0].highlighted);
+
+	struct swc_rectangle br = overview_items[1].rect;
+	cursor_known = true;
+	cursor_x = wl_fixed_from_int(br.x + 3);
+	cursor_y = wl_fixed_from_int(br.y + (int32_t)br.height +
+	    (int32_t)overview_items[1].label_height / 2);
+	overview_input->motion(NULL, cursor_x, cursor_y);
+	check("clicking in the label strip below a card selects it",
+	      overview_items[1].highlighted);
+
+	cursor_known = false;
+	closed_window = NULL;
+	overview_input->button(NULL, BTN_LEFT);
+	check("button() with no cursor position is a no-op",
+	      overview_input && closed_window == NULL && overview_items[1].highlighted);
+
+	raise_count = 0;
+	overview_input->key(NULL, XKB_KEY_Return, 0);
+	check("Return picks the selected window",
+	      !overview_input && wm.cur == b && raise_count == 1);
+
+	check("overview reopens for KP_Enter", chara_overview_toggle());
+	raise_count = 0;
+	overview_input->key(NULL, XKB_KEY_KP_Enter, 0);
+	check("KP_Enter also picks the selected window",
+	      !overview_input && wm.cur == b && raise_count == 1);
+}
+
+/* The arrow/hjkl handler in key(), including its calloc/tile_neighbour/free
+ * round trip and the "no neighbour that way" boundary. A screen too narrow
+ * for two columns forces the packer to stack the cards in one column instead
+ * of side by side, so up/down has a neighbour and left/right does not. */
+static void
+test_overview_directional(void)
+{
+	struct client *a;
+
+	setup();
+	cursor_known = false;
+	config.overview = (struct overview_config){ .include_minimized = true,
+	    .inner_gap = 8, .outer_gap = 30 };
+	swc_screens[0].usable_geometry = (struct swc_rectangle){0, 0, 460, 1080};
+	geometry[0] = (struct swc_rectangle){0, 0, 200, 200}; geometry_set[0] = true;
+	geometry[1] = (struct swc_rectangle){0, 0, 200, 200}; geometry_set[1] = true;
+	a = add_client(0, &screens[0]);
+	add_client(1, &screens[0]);
+	chara_focus(a);
+
+	check("overview opens for the directional tests", chara_overview_toggle());
+	check("too narrow for a second column stacks the cards vertically",
+	      overview_items[0].rect.x == overview_items[1].rect.x &&
+	      overview_items[1].rect.y > overview_items[0].rect.y);
+	check("focus starts the selection", overview_items[0].highlighted);
+
+	overview_input->key(NULL, XKB_KEY_Left, 0);
+	check("left has no neighbour in a single column", overview_items[0].highlighted);
+	overview_input->key(NULL, XKB_KEY_h, 0);
+	check("h has no neighbour either", overview_items[0].highlighted);
+
+	overview_input->key(NULL, XKB_KEY_Down, 0);
+	check("down moves to the card below", overview_items[1].highlighted);
+	overview_input->key(NULL, XKB_KEY_j, 0);
+	check("j has no further neighbour below", overview_items[1].highlighted);
+
+	overview_input->key(NULL, XKB_KEY_Right, 0);
+	check("right has no neighbour in a single column", overview_items[1].highlighted);
+	overview_input->key(NULL, XKB_KEY_l, 0);
+	check("l has no neighbour either", overview_items[1].highlighted);
+
+	overview_input->key(NULL, XKB_KEY_Up, 0);
+	check("up moves back to the top card", overview_items[0].highlighted);
+	overview_input->key(NULL, XKB_KEY_k, 0);
+	check("k has no further neighbour above", overview_items[0].highlighted);
+
+	chara_overview_cancel();
+}
+
+/* The extreme-count reclaim loop: labels are dropped first, then the gaps
+ * shrink, before it gives up and cancels rather than looping forever. */
+static void
+test_overview_reclaim(void)
+{
+	struct client *a;
+
+	setup();
+	cursor_known = false;
+	config.overview = (struct overview_config){ .include_minimized = true,
+	    .labels = true, .inner_gap = 8, .outer_gap = 30 };
+	swc_screens[0].usable_geometry = (struct swc_rectangle){0, 0, 1920, 80};
+	geometry[0] = (struct swc_rectangle){0, 0, 200, 200}; geometry_set[0] = true;
+	a = add_client(0, &screens[0]);
+	chara_focus(a);
+
+	check("a footer that does not fit is reclaimed rather than failing",
+	      chara_overview_toggle());
+	check("the label strip was dropped to make room",
+	      overview_items[0].label_height == 0);
+	chara_overview_cancel();
+
+	swc_screens[0].usable_geometry = (struct swc_rectangle){0, 0, 0, 1080};
+	check("an area that can never fit ends the overview instead of looping forever",
+	      !chara_overview_toggle());
+	check("the failed rebuild leaves overview inactive",
+	      !chara_overview_active() && overview_input == NULL);
+}
+
 int
 main(void)
 {
 	test_overview();
+	test_overview_keys();
+	test_overview_directional();
+	test_overview_reclaim();
 	test_moving_clears_the_old_monitor();
 	test_closing_clears_every_monitor();
 	test_fullscreen_monitor_choice();
