@@ -79,6 +79,9 @@ struct bar_config {
 	char volume_format[64], volume_muted[64];
 	unsigned clock_interval, cpu_interval, memory_interval, network_interval;
 	unsigned volume_interval;
+	/* Whether the config named a clock interval, as opposed to the default
+	 * standing in for one; see clock_resolution. */
+	bool clock_interval_set;
 };
 
 struct output;
@@ -100,6 +103,21 @@ struct shm_buffer {
 	uint8_t *data;
 	struct output *output;
 	bool busy;
+};
+
+#define MEASURE_CACHE 64
+
+/*
+ * One remembered text measurement. Laying a string out costs Pango a shaping
+ * pass, and a frame measures the same label several times over before it
+ * draws it once, so widths are kept per monitor in a small direct-mapped
+ * table keyed on the text and its ceiling.
+ */
+struct measure {
+	char text[TEXT_SIZE];
+	int max_width;
+	int width;
+	bool valid;
 };
 
 /*
@@ -128,9 +146,16 @@ struct output {
 	uint8_t *mapping;
 	size_t mapping_size;
 	struct shm_buffer buffers[2];
+	/* The buffer holding the frame the compositor was last given, which is
+	 * what the next frame is compared against to find what changed. */
+	struct shm_buffer *committed;
 	struct hit hits[MAX_HITS];
 	unsigned hit_count;
 	struct taskbar_layout taskbar;
+	struct measure measures[MEASURE_CACHE];
+	/* The numbered workspace on show, from output_active_workspace, read once
+	 * per frame rather than once per window per layout pass. */
+	uint32_t active_workspace;
 	bool configured, dirty, closed;
 	struct output *next;
 };
@@ -164,6 +189,11 @@ struct toplevel {
 	 * so this is the only way to tell which workspace it is waiting on. */
 	uint32_t workspace;
 	bool active, minimized, maximized, fullscreen, closed;
+	/* What this window's pending events have altered, so that done can tell
+	 * a change that repaints nothing from one that repaints every panel.
+	 * changed covers any field; moved covers those that decide which panels
+	 * list the window; was_active is the focus as of the last done. */
+	bool changed, moved, was_active;
 	struct toplevel *next;
 };
 
@@ -195,6 +225,9 @@ struct app {
 	size_t volume_len;
 	char volume_buf[256];
 	uint64_t cpu_total, cpu_idle;
+	/* Seconds between clock refreshes: the configured interval, or when none
+	 * was given, whatever the format can actually show. */
+	unsigned clock_step;
 	int pointer_x;
 	bool running;
 };
@@ -245,7 +278,7 @@ static void config_defaults(struct bar_config *config)
 	config->cpu_interval = 2;
 	config->memory_interval = 2;
 	config->network_interval = 2;
-	config->volume_interval = 1;
+	config->volume_interval = 0; /* zero: refresh on SIGUSR1 only */
 }
 
 static uint32_t parse_color(const char *text, uint32_t fallback)
@@ -370,17 +403,25 @@ static void parse_modules(lua_State *L, int index, struct bar_config *config)
 	}
 }
 
-static void parse_timed(lua_State *L, int bar, const char *name, char *format,
+/* Returns whether the table named a usable interval; the fallback is zero and
+ * below the allowed minimum, so any accepted value is one the config gave. */
+static bool parse_timed(lua_State *L, int bar, const char *name, char *format,
 		size_t format_size, unsigned *interval)
 {
+	bool set = false;
 	if (!lua_field(L, bar, name))
-		return;
+		return false;
 	if (lua_istable(L, -1)) {
 		lua_string_field(L, -1, "format", format, format_size);
-		*interval = lua_uint_field(L, -1, "interval", *interval,
+		unsigned value = lua_uint_field(L, -1, "interval", 0,
 			BAR_TIMED_INTERVAL_MIN, BAR_TIMED_INTERVAL_MAX);
+		if (value) {
+			*interval = value;
+			set = true;
+		}
 	}
 	lua_pop(L, 1);
+	return set;
 }
 
 /*
@@ -599,7 +640,7 @@ static bool config_load(const char *path, struct bar_config *config)
 		}
 		lua_pop(L, 1);
 	}
-	parse_timed(L, bar, "clock", config->clock_format,
+	config->clock_interval_set = parse_timed(L, bar, "clock", config->clock_format,
 	            sizeof(config->clock_format), &config->clock_interval);
 	parse_timed(L, bar, "cpu", config->cpu_format,
 	            sizeof(config->cpu_format), &config->cpu_interval);
@@ -635,15 +676,20 @@ static bool config_load(const char *path, struct bar_config *config)
 }
 
 static void draw_output(struct output *output);
+static void update_clock(void);
+
+static void mark_output(struct output *output)
+{
+	output->dirty = true;
+	/* Protocol updates may have freed a workspace/window referenced by a
+	 * hit. Rebuild hits when the next frame is drawn. */
+	output->hit_count = 0;
+}
 
 static void draw_all(void)
 {
-	for (struct output *output = app.outputs; output; output = output->next) {
-		output->dirty = true;
-		/* Protocol updates may have freed a workspace/window referenced by a
-		 * hit. Rebuild hits when the next frame is drawn. */
-		output->hit_count = 0;
-	}
+	for (struct output *output = app.outputs; output; output = output->next)
+		mark_output(output);
 }
 
 static void draw_pending(void)
@@ -660,16 +706,66 @@ static bool module_enabled(enum module_type type)
 	return false;
 }
 
+/* Re-reads one module's text. Returns whether it reads differently. */
+static bool update_text(char *text, void (*update)(void))
+{
+	char previous[TEXT_SIZE];
+	snprintf(previous, sizeof(previous), "%s", text);
+	update();
+	return strcmp(previous, text) != 0;
+}
+
 static bool refresh_module(enum module_type type, time_t now, time_t *last,
 		unsigned interval, char *text, void (*update)(void))
 {
 	if (!module_enabled(type) ||
 	    (now >= *last && now - *last < (time_t)interval)) return false;
-	char previous[TEXT_SIZE];
-	snprintf(previous, sizeof(previous), "%s", text);
-	update();
 	*last = now;
-	return strcmp(previous, text) != 0;
+	return update_text(text, update);
+}
+
+/*
+ * The clock is not an interval from whenever it was last read but a wall-clock
+ * boundary: the text changes when the minute (or second) does, and the sleep in
+ * next_timeout_ms aims for exactly that moment. Comparing which step the two
+ * instants fall in, rather than the seconds between them, means a poll that
+ * returns a few milliseconds late still counts as the boundary it was aimed at,
+ * and one that returns early goes back to sleep for the remainder.
+ */
+static bool refresh_clock(time_t now, time_t *last)
+{
+	time_t step = (time_t)app.clock_step;
+	if (!module_enabled(MODULE_CLOCK) || now / step == *last / step)
+		return false;
+	*last = now;
+	return update_text(app.clock_text, update_clock);
+}
+
+/*
+ * How often the clock format can change in seconds: every second when it
+ * shows seconds or finer, else every minute. The default interval of one
+ * second would otherwise wake the bar sixty times per visible change of a
+ * %H:%M clock. glibc's flags (_ - 0 ^ #), a field width and the E and O
+ * modifiers sit between the percent and the conversion, and %% is a literal.
+ */
+static unsigned clock_resolution(const char *format)
+{
+	for (const char *p = format; *p; ++p) {
+		if (*p != '%')
+			continue;
+		++p;
+		while (*p && strchr("_-0^#", *p))
+			++p;
+		while (*p >= '0' && *p <= '9')
+			++p;
+		if (*p == 'E' || *p == 'O')
+			++p;
+		if (!*p)
+			break;
+		if (strchr("SsTrXcNLf", *p))
+			return 1;
+	}
+	return 60;
 }
 
 static void replace_token(char *out, size_t size, const char *format,
@@ -797,9 +893,9 @@ static void update_network(void)
  * mostly waste: one wpctl per interval, forever, to re-read a number that
  * only moves when the user asks. SIGUSR1 is the cheaper trigger -- whatever
  * just ran "wpctl set-volume" already knows the reading is stale, and can
- * say so. An interval of 0 turns polling off and leaves the signal as the
- * only trigger; a non-zero interval still polls, for anything that changes
- * the volume without telling us.
+ * say so. Polling is therefore off by default: the interval is 0, which
+ * leaves the signal as the only trigger. A non-zero interval in the config
+ * still polls, for anything that changes the volume without telling us.
  */
 #define VOLUME_TIMEOUT 5
 
@@ -960,12 +1056,23 @@ static void rounded_rectangle(cairo_t *cr, double x, double y, double width,
 	cairo_close_path(cr);
 }
 
-static int text_width(PangoLayout *layout, const char *text)
+/* The cache slot a text and ceiling map to: FNV-1a over both. */
+static struct measure *measure_slot(struct output *output, const char *text,
+		int max_width)
 {
-	int width;
-	pango_layout_set_text(layout, text, -1);
-	pango_layout_get_pixel_size(layout, &width, NULL);
-	return width;
+	uint32_t hash = 2166136261u;
+	for (const unsigned char *p = (const unsigned char *)text; *p; ++p)
+		hash = (hash ^ *p) * 16777619u;
+	hash = (hash ^ (uint32_t)max_width) * 16777619u;
+	return &output->measures[hash % MEASURE_CACHE];
+}
+
+/* Drop every remembered width: the layout that produced them is new, or the
+ * bar it was measured for has changed shape. */
+static void forget_measures(struct output *output)
+{
+	for (unsigned i = 0; i < MEASURE_CACHE; ++i)
+		output->measures[i].valid = false;
 }
 
 /*
@@ -974,11 +1081,22 @@ static int text_width(PangoLayout *layout, const char *text)
  * overlong title into as much of itself as fits followed by an ellipsis.
  * The ceiling is cleared again afterwards: one layout is shared by every
  * module of a monitor.
+ *
+ * A measure-only call answers from the cache when it can. A drawing call has
+ * to lay the text out regardless, and remembers what it found. A text too long
+ * for a slot is stored cut short, so it never compares equal and simply is not
+ * cached.
  */
-static int draw_text_within(cairo_t *cr, PangoLayout *layout, const char *text,
-		int x, uint32_t color, int max_width, bool draw)
+static int draw_text_within(struct output *output, cairo_t *cr,
+		PangoLayout *layout, const char *text, int x, uint32_t color,
+		int max_width, bool draw)
 {
+	struct measure *measure = measure_slot(output, text, max_width);
+	bool cached = measure->valid && measure->max_width == max_width &&
+	              !strcmp(measure->text, text);
 	int width, height;
+	if (!draw && cached)
+		return measure->width;
 	if (max_width > 0)
 		pango_layout_set_width(layout, max_width * PANGO_SCALE);
 	pango_layout_set_text(layout, text, -1);
@@ -992,13 +1110,25 @@ static int draw_text_within(cairo_t *cr, PangoLayout *layout, const char *text,
 	}
 	if (max_width > 0)
 		pango_layout_set_width(layout, -1);
+	if (!cached) {
+		snprintf(measure->text, sizeof(measure->text), "%s", text);
+		measure->max_width = max_width;
+		measure->width = width;
+		measure->valid = true;
+	}
 	return width;
 }
 
-static int draw_text(cairo_t *cr, PangoLayout *layout, const char *text,
-		int x, uint32_t color, bool draw)
+static int text_width(struct output *output, PangoLayout *layout,
+		const char *text)
 {
-	return draw_text_within(cr, layout, text, x, color, 0, draw);
+	return draw_text_within(output, NULL, layout, text, 0, 0, 0, false);
+}
+
+static int draw_text(struct output *output, cairo_t *cr, PangoLayout *layout,
+		const char *text, int x, uint32_t color, bool draw)
+{
+	return draw_text_within(output, cr, layout, text, x, color, 0, draw);
 }
 
 /* Protocol strings are bytes: repair the encoding and cut on a character
@@ -1082,7 +1212,7 @@ static int render_workspaces(struct output *output, cairo_t *cr,
 		snprintf(number, sizeof(number), "%u", shown + 1);
 		replace_token(label, sizeof(label), app.config.workspace_format, "%n",
 		              *workspace->name ? workspace->name : number);
-		int width = text_width(layout, label) + 16;
+		int width = text_width(output, layout, label) + 16;
 		if (draw) {
 			if (workspace->state & EXT_WORKSPACE_HANDLE_V1_STATE_ACTIVE) {
 				set_source(cr, app.config.accent);
@@ -1090,7 +1220,7 @@ static int render_workspaces(struct output *output, cairo_t *cr,
 				                  (app.config.height - 8) / 2.0);
 				cairo_fill(cr);
 			}
-			draw_text(cr, layout, label, x + 8,
+			draw_text(output, cr, layout, label, x + 8,
 			          workspace->state & EXT_WORKSPACE_HANDLE_V1_STATE_ACTIVE ?
 			              app.config.background : app.config.foreground,
 			          true);
@@ -1110,14 +1240,15 @@ static struct toplevel *active_toplevel(void)
 	return NULL;
 }
 
-static int render_window(cairo_t *cr, PangoLayout *layout, int x, bool draw)
+static int render_window(struct output *output, cairo_t *cr,
+		PangoLayout *layout, int x, bool draw)
 {
 	struct toplevel *active = active_toplevel();
 	char text[TEXT_SIZE];
 	limited_text(text, sizeof(text),
 	             active && *active->title ? active->title : app.config.window_empty,
 	             app.config.window_max);
-	return draw_text(cr, layout, text, x,
+	return draw_text(output, cr, layout, text, x,
 	                 active ? app.config.foreground : app.config.muted, draw);
 }
 
@@ -1165,7 +1296,7 @@ static bool taskbar_lists(const struct output *output,
 		return false;
 	if (app.config.taskbar_scope == TASKBAR_SCOPE_MONITOR)
 		return true;
-	uint32_t active = output_active_workspace(output);
+	uint32_t active = output->active_workspace;
 	/* A compositor without the workspace extension reports zero for every
 	 * window. List the monitor's windows rather than none of them. */
 	if (!active || !item->workspace)
@@ -1182,17 +1313,18 @@ static const char *taskbar_label(const struct toplevel *item, char *out,
 }
 
 /* Width of one entry, honouring a pixel ceiling of cap when cap is set. */
-static int taskbar_item_width(PangoLayout *layout, const char *text, int cap)
+static int taskbar_item_width(struct output *output, PangoLayout *layout,
+		const char *text, int cap)
 {
 	int room = cap > 2 * TASKBAR_ITEM_PADDING ?
 		cap - 2 * TASKBAR_ITEM_PADDING : 0;
-	int width = draw_text_within(NULL, layout, text, 0, 0, room, false);
+	int width = draw_text_within(output, NULL, layout, text, 0, 0, room, false);
 	return width + 2 * TASKBAR_ITEM_PADDING;
 }
 
 /* Total width of this monitor's entries at a given per-entry ceiling. */
-static int taskbar_content_width(const struct output *output,
-		PangoLayout *layout, int cap, unsigned *count)
+static int taskbar_content_width(struct output *output, PangoLayout *layout,
+		int cap, unsigned *count)
 {
 	int width = 0;
 	unsigned items = 0;
@@ -1201,8 +1333,8 @@ static int taskbar_content_width(const struct output *output,
 		if (!taskbar_lists(output, item))
 			continue;
 		if (items) width += TASKBAR_ITEM_GAP;
-		width += taskbar_item_width(layout, taskbar_label(item, text,
-		                                                 sizeof(text)), cap);
+		width += taskbar_item_width(output, layout,
+		                            taskbar_label(item, text, sizeof(text)), cap);
 		++items;
 	}
 	if (count) *count = items;
@@ -1255,7 +1387,7 @@ static int render_taskbar(struct output *output, cairo_t *cr,
 		if (!taskbar_lists(output, item))
 			continue;
 		taskbar_label(item, text, sizeof(text));
-		int width = taskbar_item_width(layout, text, taskbar->item_cap);
+		int width = taskbar_item_width(output, layout, text, taskbar->item_cap);
 		/* Entries scrolled fully out of the strip still advance the cursor,
 		 * but neither paint nor take clicks. */
 		if (item_x + width > x && item_x < x + shown) {
@@ -1264,7 +1396,8 @@ static int render_taskbar(struct output *output, cairo_t *cr,
 				rounded_rectangle(cr, item_x, 4, width, app.config.height - 8, 6);
 				cairo_fill(cr);
 			}
-			draw_text_within(cr, layout, text, item_x + TASKBAR_ITEM_PADDING,
+			draw_text_within(output, cr, layout, text,
+			                 item_x + TASKBAR_ITEM_PADDING,
 			                 item->active ? app.config.background :
 			                 item->minimized ? app.config.muted :
 			                                   app.config.foreground,
@@ -1295,15 +1428,15 @@ static int render_module(enum module_type module, struct output *output,
 {
 	switch (module) {
 	case MODULE_WORKSPACES: return render_workspaces(output, cr, layout, x, draw);
-	case MODULE_WINDOW: return render_window(cr, layout, x, draw);
+	case MODULE_WINDOW: return render_window(output, cr, layout, x, draw);
 	case MODULE_TASKBAR: return render_taskbar(output, cr, layout, x, draw);
-	case MODULE_CLOCK: return draw_text(cr, layout, app.clock_text, x, app.config.foreground, draw);
-	case MODULE_CPU: return draw_text(cr, layout, app.cpu_text, x, app.config.foreground, draw);
-	case MODULE_MEMORY: return draw_text(cr, layout, app.memory_text, x, app.config.foreground, draw);
-	case MODULE_NETWORK: return draw_text(cr, layout, app.network_text, x,
+	case MODULE_CLOCK: return draw_text(output, cr, layout, app.clock_text, x, app.config.foreground, draw);
+	case MODULE_CPU: return draw_text(output, cr, layout, app.cpu_text, x, app.config.foreground, draw);
+	case MODULE_MEMORY: return draw_text(output, cr, layout, app.memory_text, x, app.config.foreground, draw);
+	case MODULE_NETWORK: return draw_text(output, cr, layout, app.network_text, x,
 	                                      *app.network_text ? app.config.foreground : app.config.muted,
 	                                      draw);
-	case MODULE_VOLUME: return draw_text(cr, layout, app.volume_text, x,
+	case MODULE_VOLUME: return draw_text(output, cr, layout, app.volume_text, x,
 	                                     app.volume_muted ? app.config.muted : app.config.foreground,
 	                                     draw);
 	}
@@ -1405,9 +1538,6 @@ static void layout_taskbar(struct output *output, cairo_t *cr,
 	int fixed[3] = {0};
 	*taskbar = (struct taskbar_layout){ .budget = -1 };
 	for (unsigned side = 0; side < 3; ++side) {
-		if (!app.config.module_count[side])
-			continue;
-		fixed[side] = group_fixed_width(side, output, cr, layout);
 		for (unsigned i = 0; i < app.config.module_count[side]; ++i)
 			if (app.config.modules[side][i] == MODULE_TASKBAR)
 				++instances[side];
@@ -1415,6 +1545,10 @@ static void layout_taskbar(struct output *output, cairo_t *cr,
 	}
 	if (!total)
 		return;
+	/* Only a bar with a taskbar needs to know what the rest of it costs. */
+	for (unsigned side = 0; side < 3; ++side)
+		if (app.config.module_count[side])
+			fixed[side] = group_fixed_width(side, output, cr, layout);
 	taskbar->content = taskbar_content_width(output, layout, 0, &items);
 	if (app.config.taskbar_overflow == TASKBAR_OVERFLOW_NONE)
 		return;
@@ -1541,7 +1675,50 @@ static bool allocate_buffers(struct output *output, uint32_t width,
 	output->shm_fd = fd;
 	output->width = width;
 	output->height = height;
+	output->committed = NULL;
 	return true;
+}
+
+/*
+ * The rectangle in which two frames of the bar differ, or false when they do
+ * not. A tick that changes one digit of the clock then damages a few dozen
+ * pixels rather than the whole strip, and the compositor uploads only those.
+ */
+static bool frame_difference(uint32_t width, uint32_t height,
+		const uint8_t *a, const uint8_t *b, int *x1, int *y1, int *x2, int *y2)
+{
+	size_t stride = (size_t)width * 4;
+	bool any = false;
+	*x1 = (int)width;
+	*y1 = (int)height;
+	*x2 = *y2 = 0;
+	for (uint32_t y = 0; y < height; ++y) {
+		const uint32_t *ra = (const uint32_t *)(a + y * stride);
+		const uint32_t *rb = (const uint32_t *)(b + y * stride);
+		if (!memcmp(ra, rb, stride))
+			continue;
+		uint32_t first = 0, last = width - 1;
+		while (ra[first] == rb[first]) ++first;
+		while (ra[last] == rb[last]) --last;
+		if ((int)first < *x1) *x1 = (int)first;
+		if ((int)last + 1 > *x2) *x2 = (int)last + 1;
+		if ((int)y < *y1) *y1 = (int)y;
+		*y2 = (int)y + 1;
+		any = true;
+	}
+	return any;
+}
+
+/* Which of the bar the compositor need not draw behind: all of it, when its
+ * background is solid. Only its size and colour matter, so this is settled
+ * when the bar is configured rather than on every frame. */
+static void set_opaque_region(struct output *output)
+{
+	struct wl_region *opaque = wl_compositor_create_region(app.compositor);
+	if ((app.config.background >> 24) == 0xff)
+		wl_region_add(opaque, 0, 0, (int)output->width, (int)output->height);
+	wl_surface_set_opaque_region(output->surface, opaque);
+	wl_region_destroy(opaque);
 }
 
 static void frame_done(void *data, struct wl_callback *callback, uint32_t time)
@@ -1559,12 +1736,20 @@ static void draw_output(struct output *output)
 	if (!output || !output->configured || output->closed || !output->width ||
 	    !output->dirty || output->frame)
 		return;
-	struct shm_buffer *buffer = NULL;
+	/* Draw into the buffer that does not hold the frame on show, so that
+	 * the two can be compared afterwards; the other only when it is the
+	 * one that is free, in which case the whole frame is sent. */
+	struct shm_buffer *buffer = NULL, *previous = output->committed;
 	for (unsigned i = 0; i < 2; ++i)
-		if (output->buffers[i].proxy && !output->buffers[i].busy) {
+		if (output->buffers[i].proxy && !output->buffers[i].busy &&
+		    &output->buffers[i] != previous) {
 			buffer = &output->buffers[i];
 			break;
 		}
+	if (!buffer && previous && !previous->busy) {
+		buffer = previous;
+		previous = NULL;
+	}
 	if (!buffer)
 		return;
 	cairo_surface_t *surface = cairo_image_surface_create_for_data(
@@ -1582,11 +1767,13 @@ static void draw_output(struct output *output)
 		pango_layout_set_font_description(output->layout, font);
 		pango_font_description_free(font);
 		pango_layout_set_ellipsize(output->layout, PANGO_ELLIPSIZE_END);
+		forget_measures(output);
 	} else {
 		pango_cairo_update_layout(cr, output->layout);
 	}
 	PangoLayout *layout = output->layout;
 	output->hit_count = 0;
+	output->active_workspace = output_active_workspace(output);
 	layout_taskbar(output, cr, layout);
 	int left_width = group_width(0, output, cr, layout);
 	int center_width = group_width(1, output, cr, layout);
@@ -1606,18 +1793,20 @@ static void draw_output(struct output *output)
 	cairo_destroy(cr);
 	cairo_surface_flush(surface);
 	cairo_surface_destroy(surface);
-	buffer->busy = true;
 	output->dirty = false;
+	int x1 = 0, y1 = 0, x2 = (int)output->width, y2 = (int)output->height;
+	/* Drawn the same as what is on show: the compositor has it already. */
+	if (previous && !frame_difference(output->width, output->height,
+	                                  buffer->data, previous->data,
+	                                  &x1, &y1, &x2, &y2))
+		return;
+	buffer->busy = true;
 	wl_surface_attach(output->surface, buffer->proxy, 0, 0);
-	wl_surface_damage(output->surface, 0, 0, INT32_MAX, INT32_MAX);
+	wl_surface_damage_buffer(output->surface, x1, y1, x2 - x1, y2 - y1);
 	output->frame = wl_surface_frame(output->surface);
 	wl_callback_add_listener(output->frame, &frame_listener, output);
-	struct wl_region *opaque = wl_compositor_create_region(app.compositor);
-	if ((app.config.background >> 24) == 0xff)
-		wl_region_add(opaque, 0, 0, (int)output->width, (int)output->height);
-	wl_surface_set_opaque_region(output->surface, opaque);
-	wl_region_destroy(opaque);
 	wl_surface_commit(output->surface);
+	output->committed = buffer;
 }
 
 static void layer_configure(void *data,
@@ -1628,11 +1817,14 @@ static void layer_configure(void *data,
 	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
 	if (!width) width = output->width;
 	if (!height) height = app.config.height;
-	if ((!output->mapping || output->width != width || output->height != height) &&
-	    !allocate_buffers(output, width, height)) {
-		fprintf(stderr, "charabar: couldn't allocate %ux%u bar buffers\n", width,
-		        height);
-		return;
+	if (!output->mapping || output->width != width || output->height != height) {
+		if (!allocate_buffers(output, width, height)) {
+			fprintf(stderr, "charabar: couldn't allocate %ux%u bar buffers\n", width,
+			        height);
+			return;
+		}
+		forget_measures(output);
+		set_opaque_region(output);
 	}
 	output->configured = true;
 	output->dirty = true;
@@ -1930,20 +2122,36 @@ static const struct ext_workspace_manager_v1_listener workspace_manager_listener
 	.finished = workspace_manager_finished,
 };
 
+/*
+ * Each listener notes whether its event changed anything, so that done can
+ * tell a title said again from a title that changed. A shell that sets its
+ * title on every prompt sends the former constantly, and it used to repaint
+ * every panel each time.
+ */
 static void toplevel_title(void *data,
 		struct zwlr_foreign_toplevel_handle_v1 *proxy, const char *title)
 {
 	struct toplevel *toplevel = data;
+	char text[TEXT_SIZE];
 	(void)proxy;
-	store_utf8(toplevel->title, sizeof(toplevel->title), title);
+	store_utf8(text, sizeof(text), title);
+	if (!strcmp(text, toplevel->title))
+		return;
+	memcpy(toplevel->title, text, sizeof(text));
+	toplevel->changed = true;
 }
 
 static void toplevel_app_id(void *data,
 		struct zwlr_foreign_toplevel_handle_v1 *proxy, const char *app_id)
 {
 	struct toplevel *toplevel = data;
+	char text[sizeof(toplevel->app_id)];
 	(void)proxy;
-	store_utf8(toplevel->app_id, sizeof(toplevel->app_id), app_id);
+	store_utf8(text, sizeof(text), app_id);
+	if (!strcmp(text, toplevel->app_id))
+		return;
+	memcpy(toplevel->app_id, text, sizeof(text));
+	toplevel->changed = true;
 }
 
 /*
@@ -1959,9 +2167,10 @@ static void toplevel_output_enter(void *data,
 	struct toplevel *toplevel = data;
 	struct output *output = find_output(wl_output);
 	(void)proxy;
-	if (output) {
+	if (output && !(toplevel->outputs & output->bit)) {
 		toplevel->outputs |= output->bit;
 		toplevel->last_outputs = toplevel->outputs;
+		toplevel->changed = toplevel->moved = true;
 	}
 }
 
@@ -1971,10 +2180,11 @@ static void toplevel_output_leave(void *data,
 	struct toplevel *toplevel = data;
 	struct output *output = find_output(wl_output);
 	(void)proxy;
-	if (!output) return;
+	if (!output || !(toplevel->outputs & output->bit)) return;
 	toplevel->outputs &= ~output->bit;
 	/* Leaving the last one is what makes that monitor the remembered one. */
 	toplevel->last_outputs = toplevel->outputs ? toplevel->outputs : output->bit;
+	toplevel->changed = toplevel->moved = true;
 }
 
 static void toplevel_state(void *data,
@@ -1982,22 +2192,50 @@ static void toplevel_state(void *data,
 {
 	struct toplevel *toplevel = data;
 	uint32_t *state;
+	bool active = false, minimized = false, maximized = false, fullscreen = false;
 	(void)proxy;
-	toplevel->active = toplevel->minimized = false;
-	toplevel->maximized = toplevel->fullscreen = false;
 	wl_array_for_each(state, states) {
 		switch (*state) {
-		case ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED: toplevel->active = true; break;
-		case ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED: toplevel->minimized = true; break;
-		case ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED: toplevel->maximized = true; break;
-		case ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN: toplevel->fullscreen = true; break;
+		case ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED: active = true; break;
+		case ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED: minimized = true; break;
+		case ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED: maximized = true; break;
+		case ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN: fullscreen = true; break;
 		}
 	}
+	if (active == toplevel->active && minimized == toplevel->minimized &&
+	    maximized == toplevel->maximized && fullscreen == toplevel->fullscreen)
+		return;
+	toplevel->active = active;
+	toplevel->minimized = minimized;
+	toplevel->maximized = maximized;
+	toplevel->fullscreen = fullscreen;
+	toplevel->changed = true;
 }
 
+/*
+ * Repaint the panels this window shows on, and only if something about it
+ * changed. The window module shows whichever window has the focus, so a change
+ * to the one that has it, or had it until now, is one it shows. A taskbar lists
+ * the window on the panels it belongs to, and once it has moved it has to leave
+ * the ones it belonged to before as well, so a move repaints every panel.
+ */
 static void toplevel_done(void *data,
 		struct zwlr_foreign_toplevel_handle_v1 *proxy)
-{ (void)data; (void)proxy; draw_all(); }
+{
+	struct toplevel *toplevel = data;
+	(void)proxy;
+	if (!toplevel->changed)
+		return;
+	bool window_module = module_enabled(MODULE_WINDOW);
+	bool taskbar_module = module_enabled(MODULE_TASKBAR);
+	for (struct output *output = app.outputs; output; output = output->next) {
+		if ((window_module && (toplevel->active || toplevel->was_active)) ||
+		    (taskbar_module && (toplevel->moved || taskbar_lists(output, toplevel))))
+			mark_output(output);
+	}
+	toplevel->was_active = toplevel->active;
+	toplevel->changed = toplevel->moved = false;
+}
 
 static void toplevel_closed(void *data,
 		struct zwlr_foreign_toplevel_handle_v1 *proxy)
@@ -2027,7 +2265,10 @@ static void toplevel_workspace(void *data,
 {
 	struct toplevel *toplevel = data;
 	(void)proxy;
+	if (workspace == toplevel->workspace)
+		return;
 	toplevel->workspace = workspace;
+	toplevel->changed = toplevel->moved = true;
 }
 
 static void toplevel_parent(void *data,
@@ -2058,6 +2299,8 @@ static void manager_toplevel(void *data,
 		return;
 	}
 	toplevel->proxy = proxy;
+	/* New, so the first done lists it whatever its events say. */
+	toplevel->changed = toplevel->moved = true;
 	toplevel->next = app.toplevels;
 	app.toplevels = toplevel;
 	zwlr_foreign_toplevel_handle_v1_add_listener(proxy, &toplevel_listener,
@@ -2405,49 +2648,59 @@ static void handle_signal(int signal_number)
  * Capped, so that a clock stepped backwards parks the bar for a minute at
  * worst; refresh_module notices the jump on the next wakeup either way.
  */
-static int next_timeout_ms(time_t now, time_t last_clock, time_t last_cpu,
-		time_t last_memory, time_t last_network, time_t last_volume)
+static int next_timeout_ms(time_t now, time_t last_cpu, time_t last_memory,
+		time_t last_network, time_t last_volume)
 {
 	const struct {
 		enum module_type type;
 		unsigned interval;
 		time_t last;
 	} timed[] = {
-		{ MODULE_CLOCK,   app.config.clock_interval,   last_clock },
 		{ MODULE_CPU,     app.config.cpu_interval,     last_cpu },
 		{ MODULE_MEMORY,  app.config.memory_interval,  last_memory },
 		{ MODULE_NETWORK, app.config.network_interval, last_network },
 	};
-	time_t wait = 60;
+	int64_t wait = 60000;
 
 	for (size_t i = 0; i < sizeof(timed) / sizeof(*timed); ++i) {
 		if (!module_enabled(timed[i].type) || timed[i].interval == 0)
 			continue;
 		time_t due = timed[i].last + (time_t)timed[i].interval;
-		time_t left = now >= due ? 0 : due - now;
+		int64_t left = now >= due ? 0 : (int64_t)(due - now) * 1000;
+		if (left < wait)
+			wait = left;
+	}
+	if (module_enabled(MODULE_CLOCK)) {
+		/* To the next boundary of the wall clock, not an interval from the
+		 * last reading: the minute changes at :00 whenever the bar last
+		 * looked, and waking anywhere else shows nothing new. */
+		struct timespec ts;
+		int64_t step = (int64_t)app.clock_step * 1000, left;
+		clock_gettime(CLOCK_REALTIME, &ts);
+		left = step - (((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000) % step);
 		if (left < wait)
 			wait = left;
 	}
 	if (module_enabled(MODULE_VOLUME)) {
 		time_t due;
-		time_t left;
+		int64_t left;
 
 		if (app.volume_fd >= 0 || app.volume_pid > 0) {
 			/* A query is in flight. Its pipe wakes us when it answers, but
 			 * a wedged wpctl only answers to the timeout, so that has to
 			 * bound the sleep too. */
 			due = app.volume_started + VOLUME_TIMEOUT;
-			left = now >= due ? 0 : due - now;
+			left = now >= due ? 0 : (int64_t)(due - now) * 1000;
 			if (left < wait)
 				wait = left;
 		} else if (app.config.volume_interval > 0) {
 			due = last_volume + (time_t)app.config.volume_interval;
-			left = now >= due ? 0 : due - now;
+			left = now >= due ? 0 : (int64_t)(due - now) * 1000;
 			if (left < wait)
 				wait = left;
 		}
 	}
-	return wait <= 0 ? 0 : (int)(wait * 1000);
+	return wait <= 0 ? 0 : (int)wait;
 }
 
 static void cleanup_app(void)
@@ -2542,6 +2795,10 @@ int main(int argc, char **argv)
 		fprintf(stderr, "charabar: compositor is missing a required desktop protocol\n");
 		goto failed;
 	}
+	/* An interval the config named is kept; otherwise the clock is read as
+	 * often as its format can show a difference. */
+	app.clock_step = app.config.clock_interval_set ? app.config.clock_interval
+	                 : clock_resolution(app.config.clock_format);
 	if (module_enabled(MODULE_CLOCK)) update_clock();
 	if (module_enabled(MODULE_CPU)) update_cpu();
 	if (module_enabled(MODULE_MEMORY)) update_memory();
@@ -2573,8 +2830,8 @@ int main(int argc, char **argv)
 			pollfds[0].events |= POLLOUT;
 		}
 		int result = poll(pollfds, nfds,
-			next_timeout_ms(time(NULL), last_clock, last_cpu, last_memory,
-			                last_network, last_volume));
+			next_timeout_ms(time(NULL), last_cpu, last_memory, last_network,
+			                last_volume));
 		if (result < 0 && errno != EINTR)
 			break;
 		if (result > 0 && (pollfds[0].revents & (POLLERR | POLLHUP)))
@@ -2587,8 +2844,7 @@ int main(int argc, char **argv)
 			(pollfds[1].revents & (POLLIN | POLLHUP | POLLERR)));
 		time_t now = time(NULL);
 		bool changed = false;
-		changed |= refresh_module(MODULE_CLOCK, now, &last_clock,
-			app.config.clock_interval, app.clock_text, update_clock);
+		changed |= refresh_clock(now, &last_clock);
 		changed |= refresh_module(MODULE_CPU, now, &last_cpu,
 			app.config.cpu_interval, app.cpu_text, update_cpu);
 		changed |= refresh_module(MODULE_MEMORY, now, &last_memory,
