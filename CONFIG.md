@@ -613,9 +613,13 @@ Available modules are `workspaces`, `window`, `taskbar`, `clock`, `cpu`,
 ### Module options
 
 Each module takes its own table. `interval` is in seconds, from 1 to 3600.
-`volume` also accepts `0`, which stops it polling and refreshes it only when
-charabar is sent `SIGUSR1` -- useful when a keybind already tells it about
-every change. The other modules have no such mode and require at least 1.
+`volume` defaults to `0`, which stops it polling and refreshes it only when
+charabar is sent `SIGUSR1` -- a keybind that changes the volume can tell it
+about every change, and polling would fork a `wpctl` every interval to read
+a number that had not moved. Set an interval to poll instead. The other
+modules have no such mode and require at least 1. `clock` without an
+`interval` is refreshed as often as its format can show a difference: once
+a minute for `%H:%M`, once a second for a format with seconds in it.
 
 ```lua
 workspaces = { count = 9, format = "%n" },
