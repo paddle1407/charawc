@@ -201,6 +201,21 @@ load_cursor_theme(void)
 
 /* ------------------------------------------------------------ wallpaper */
 
+/*
+ * Whether a reload leaves the wallpaper exactly as it is. Preparing one scales
+ * the image for every monitor and uploads it again, which is most of what an
+ * ordinary reload used to spend its time on.
+ */
+static bool
+wallpaper_unchanged(const struct wallpaper *next, const struct wallpaper *now)
+{
+	if (next->mode != now->mode || next->background != now->background)
+		return false;
+	if (next->borrowed)
+		return true;
+	return !next->path && !now->path;
+}
+
 static void
 apply_wallpaper(void)
 {
@@ -236,6 +251,15 @@ queue_wallpaper(void)
 
 /* ------------------------------------------------------------------ bar */
 
+/* The bar's process group, or the bar alone when it is so new that it has
+ * not reached setsid() yet and has no group to signal. */
+static void
+signal_bar(int sig)
+{
+	if (kill(-bar_pid, sig) < 0 && errno == ESRCH)
+		kill(bar_pid, sig);
+}
+
 static void
 spawn_bar(void)
 {
@@ -259,7 +283,7 @@ update_bar(bool enabled, bool restart)
 		 * claim an exclusive zone each until the first finished exiting.
 		 * bar_pid stays set so the exit is recognised as this bar's. */
 		bar_restarting = enabled;
-		kill(-bar_pid, SIGTERM);
+		signal_bar(SIGTERM);
 		return;
 	}
 	if (enabled && bar_pid <= 0)
@@ -340,10 +364,8 @@ on_scr_geometry(void *data)
 	if (chara_overview_on_screen(s)) chara_overview_cancel();
 
 	/* The bar appearing, or a mode change: every workspace on this monitor
-	 * has a different area to fill than it did. */
+	 * has a different area to fill than it did. reconcile() marks them all. */
 	screen_geometry(s);
-	for (uint8_t ws = 1; ws <= CHARA_WORKSPACES; ++ws)
-		chara_tiling_dirty(s, ws);
 	reconcile();
 }
 
@@ -568,6 +590,11 @@ reload_now(void *data)
 	swc_binding_batch_commit(batch);
 	chara_bindings_replace(&next);
 
+	/* Nothing can fail from here on, so the new configuration may take the
+	 * image it shares with the running one. */
+	bool wallpaper_same = wallpaper_unchanged(&next.wallpaper, &config.wallpaper);
+	chara_wallpaper_adopt(&next.wallpaper, &config.wallpaper);
+
 	/* exec_once only runs at startup; exec runs on every reload. */
 	struct startup_command *c, *tmp;
 	wl_list_for_each_safe(c, tmp, &next.exec_once, link) {
@@ -584,7 +611,8 @@ reload_now(void *data)
 	chara_config_finish(&previous);
 
 	load_cursor_theme();
-	apply_wallpaper();
+	if (!wallpaper_same)
+		apply_wallpaper();
 	update_bar(config.bar.enabled, bar_changed);
 	chara_bind_mouse(config.values.mod);
 
@@ -639,7 +667,7 @@ cleanup(void)
 {
 	chara_overview_cancel();
 	if (bar_pid > 0)
-		kill(-bar_pid, SIGTERM);
+		signal_bar(SIGTERM);
 	chara_startup_finish();
 	chara_tiling_finish();
 	chara_ipc_finish();

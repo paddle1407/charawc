@@ -195,7 +195,10 @@ minimum(const struct client *c, uint32_t *width, uint32_t *height)
 static bool
 build_plan(struct screen *s, uint8_t ws, struct plan *p)
 {
-	memset(p, 0, sizeof(*p));
+	/* Not cleared as a whole: that is some twelve kilobytes a time, on a
+	 * path a drag walks at the pointer's rate, and only the first n entries
+	 * are ever read. */
+	p->n = 0;
 	if (!s || !s->scr || ws < 1 || ws > CHARA_WORKSPACES)
 		return false;
 	p->n = collect(s, ws, true, p->clients, TILE_MAX_WINDOWS);
@@ -653,22 +656,6 @@ gather_showing(const struct screen *s, struct client **out,
 	return n;
 }
 
-/* The window a monitor should hand the focus to when it is stepped onto. */
-static struct client *
-first_showing(struct screen *s)
-{
-	struct client *clients[TILE_MAX_WINDOWS];
-	struct tile_item items[TILE_MAX_WINDOWS];
-	unsigned n = gather_showing(s, clients, items, TILE_MAX_WINDOWS);
-
-	if (!n)
-		return NULL;
-	if (s->focus && s->focus->scr == s && s->focus->ws == s->ws &&
-	    !s->focus->minimized)
-		return s->focus;
-	return clients[0];
-}
-
 /*
  * Stepping through a monocle workspace.
  *
@@ -740,7 +727,9 @@ chara_focus_dir(enum tile_dir dir)
 	if (!to || to == s)
 		return false;
 	{
-		struct client *arrive = first_showing(to);
+		/* The window last used there, as a monitor the pointer walks
+		 * onto would pick. */
+		struct client *arrive = chara_first_on(to);
 
 		if (!arrive)
 			return false;

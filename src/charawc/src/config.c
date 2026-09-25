@@ -1400,6 +1400,7 @@ chara_config_move(struct config *dst, struct config *src)
 	src->wallpaper.path = NULL;
 	src->wallpaper.pixels = NULL;
 	src->wallpaper.decoded = false;
+	src->wallpaper.borrowed = false;
 	src->decoration = NULL;
 }
 

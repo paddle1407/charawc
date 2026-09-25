@@ -12,6 +12,12 @@ static struct {
 	unsigned count;
 	uint32_t selected, saved_focus;
 	bool rebuilding;
+	/* What the current layout was arranged from. Every geometry change of
+	 * every window asks for a refresh, and most change nothing the packing
+	 * reads; those reuse the rectangles instead of packing again. */
+	struct swc_rectangle area;
+	int32_t gap, outer;
+	uint32_t footer, footer_used;
 } overview;
 
 bool chara_overview_active(void) { return overview.screen != NULL; }
@@ -87,13 +93,33 @@ void chara_overview_refresh(void)
 	int gap = config.overview.inner_gap, outer = config.overview.outer_gap;
 	unsigned footer = config.overview.labels ? 24 : 0;
 	struct swc_rectangle area = overview.screen->scr->usable_geometry;
-	/* At extreme counts, reclaim labels and spacing before giving up. No
-	 * window is omitted. At least one background pixel remains at the edge. */
-	while (!ov_arrange(layout, n, area, gap, outer, footer)) {
-		if (footer) footer = 0;
-		else if (gap) gap /= 2;
-		else if (outer > 1) outer /= 2;
-		else goto fail;
+	bool same = overview.layout && n == overview.count &&
+	    !memcmp(&area, &overview.area, sizeof(area)) &&
+	    gap == overview.gap && outer == overview.outer &&
+	    footer == overview.footer;
+	for (i = 0; same && i < n; ++i)
+		same = layout[i].id == overview.layout[i].id &&
+		       layout[i].src_width == overview.layout[i].src_width &&
+		       layout[i].src_height == overview.layout[i].src_height;
+	if (same) {
+		for (i = 0; i < n; ++i)
+			layout[i].rect = overview.layout[i].rect;
+		footer = overview.footer_used;
+	} else {
+		overview.area = area;
+		overview.gap = gap;
+		overview.outer = outer;
+		overview.footer = footer;
+		/* At extreme counts, reclaim labels and spacing before giving up.
+		 * No window is omitted. At least one background pixel remains at
+		 * the edge. */
+		while (!ov_arrange(layout, n, area, gap, outer, footer)) {
+			if (footer) footer = 0;
+			else if (gap) gap /= 2;
+			else if (outer > 1) outer /= 2;
+			else goto fail;
+		}
+		overview.footer_used = footer;
 	}
 	for (i = 0; i < n; ++i) {
 		draw[i].rect = layout[i].rect;

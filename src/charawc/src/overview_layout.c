@@ -71,23 +71,39 @@ double ov_arrange(struct ov_item *items, unsigned n, struct swc_rectangle area,
 	    (int64_t)area.x + area.width > INT_MAX ||
 	    (int64_t)area.y + area.height > INT_MAX) return 0;
 	struct entry *e = calloc(n, sizeof(*e));
-	struct swc_rectangle *out = calloc(n, sizeof(*out));
-	if (!e || !out) { free(e); free(out); return 0; }
+	/* Two buffers: `out` always holds the packing for `low`, the best scale
+	 * known to fit, and trials go into the other, so the answer never has to
+	 * be packed a second time once it is found. */
+	struct swc_rectangle *buffers = calloc(2 * (size_t)n, sizeof(*buffers));
+	struct swc_rectangle *out = buffers, *trial = buffers ? buffers + n : NULL;
+	uint32_t largest = 1;
+	if (!e || !buffers) { free(e); free(buffers); return 0; }
 	for (unsigned i = 0; i < n; ++i) {
-		if (!items[i].src_width || !items[i].src_height) { free(e); free(out); return 0; }
+		if (!items[i].src_width || !items[i].src_height) { free(e); free(buffers); return 0; }
 		e[i] = (struct entry){ items[i], i };
+		if (items[i].src_width > largest) largest = items[i].src_width;
+		if (items[i].src_height > largest) largest = items[i].src_height;
 	}
 	qsort(e, n, sizeof(*e), order);
 	if (!pack(e, n, out, width, height, inner, footer, 0)) {
-		free(e); free(out); return 0;
+		free(e); free(buffers); return 0;
 	}
+	/* Each trial is a full packing, cubic in n. Past the point where the
+	 * interval moves the largest image by a sixty-fourth of a pixel, halving
+	 * it again changes no size that rounding can show, so stop there rather
+	 * than after a fixed fifty halvings; the cap keeps the old bound. */
 	double low = 0, high = 1;
-	for (unsigned k = 0; k < 50; ++k) {
+	for (unsigned k = 0; k < 50 && (high - low) * largest > 1.0 / 64; ++k) {
 		double mid = (low + high) / 2;
-		if (pack(e, n, out, width, height, inner, footer, mid)) low = mid;
-		else high = mid;
+		if (pack(e, n, trial, width, height, inner, footer, mid)) {
+			struct swc_rectangle *swap = out;
+			out = trial;
+			trial = swap;
+			low = mid;
+		} else {
+			high = mid;
+		}
 	}
-	pack(e, n, out, width, height, inner, footer, low);
 	int64_t right = 0, bottom = 0;
 	for (unsigned i = 0; i < n; ++i) {
 		if (out[i].x + out[i].width > right) right = out[i].x + out[i].width;
@@ -98,6 +114,6 @@ double ov_arrange(struct ov_item *items, unsigned n, struct swc_rectangle area,
 		out[i].y += area.y + outer + (height - bottom) / 2;
 		items[e[i].index].rect = out[i];
 	}
-	free(e); free(out);
+	free(e); free(buffers);
 	return low;
 }

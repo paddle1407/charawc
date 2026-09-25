@@ -209,6 +209,7 @@ void chara_stop(void);
 void chara_request_reload(void);
 void chara_minimize(struct client *);
 void chara_restore(struct client *);
+void chara_bring_up(struct client *); /* restore it or show its workspace */
 bool chara_set_fullscreen(struct client *, bool, struct swc_screen *);
 bool chara_set_maximized(struct client *, bool);
 bool chara_set_pinned(struct client *, bool);

@@ -79,10 +79,13 @@ const struct command commands[cmd_last] = {
 	[cmd_quit]             = { "quit", cmd_quit, 0, false, "" },
 };
 
+/* Not zero-initialised: vsnprintf terminates the message, and clearing all
+ * MAXSIZE bytes of it on every reply was most of what a reply cost. */
 static status
 ok(const char *fmt, ...)
 {
-	status s = { .ok = true };
+	status s;
+	s.ok = true;
 	va_list list;
 	va_start(list, fmt);
 	vsnprintf(s.msg, sizeof(s.msg), fmt, list);
@@ -93,7 +96,8 @@ ok(const char *fmt, ...)
 static status
 fail(const char *fmt, ...)
 {
-	status s = { .ok = false };
+	status s;
+	s.ok = false;
 	va_list list;
 	va_start(list, fmt);
 	vsnprintf(s.msg, sizeof(s.msg), fmt, list);
@@ -161,6 +165,10 @@ place(struct client *c, struct swc_rectangle g)
 {
 	if (c->fullscreen || c->maximized)
 		return fail("window is fullscreen or maximized");
+	/* The layout owns a tiled window's cell: moved here it would sit over
+	 * its neighbours until the next arrange put it back. */
+	if (c->tiled)
+		return fail("window is tiled");
 	if (g.width < 1 || g.height < 1)
 		return fail("size must be positive");
 
@@ -170,6 +178,27 @@ place(struct client *c, struct swc_rectangle g)
 	c->width = g.width;
 	c->height = g.height;
 	return ok("");
+}
+
+/*
+ * A title or app_id as it may appear in a reply. They are the client's to
+ * choose, and a reply is one line of tab-separated fields: a newline in a
+ * title would end it early and have the rest read as lines of their own,
+ * and a tab would shift every field after it.
+ */
+static const char *
+printable(const char *text, const char *missing, char *out, size_t size)
+{
+	size_t i = 0;
+
+	if (!text)
+		return missing;
+	for (; text[i] && i + 1 < size; ++i) {
+		unsigned char ch = (unsigned char)text[i];
+		out[i] = ch < 0x20 || ch == 0x7f ? ' ' : (char)ch;
+	}
+	out[i] = '\0';
+	return out;
 }
 
 static struct swc_rectangle
@@ -190,12 +219,15 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 
 	if (cmd->selects) {
 		const char *selector = argc > 0 ? argv[0] : NULL;
+		/* Spelled out or left out, "focused" is the same request. */
+		bool named = selector && *selector && strcmp(selector, "focused");
+
 		c = chara_lookup(selector);
 		first = argc > 0 ? 1 : 0;
 		/* restore with nothing named falls back to the most recently
 		 * minimized window, so no focus is not an error there. A name that
 		 * resolves to nothing still is. */
-		if (!c && (selector || cmd->command != cmd_restore))
+		if (!c && (named || cmd->command != cmd_restore))
 			return fail("no such window: %s", selector ? selector : "focused");
 	}
 	int provided = argc - first;
@@ -231,6 +263,7 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 
 	struct swc_rectangle g;
 	char label[CHARA_NAME_MAX + 16];
+	char text[MAXSIZE / 2], app_id[CHARA_APP_ID_MAX * 4];
 
 	switch (cmd->command) {
 	case cmd_move:
@@ -298,6 +331,7 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		swc_window_close(c->win);
 		return ok("");
 	case cmd_focus:
+		chara_bring_up(c);
 		chara_focus(c);
 		return ok("");
 	case cmd_focus_next:
@@ -426,9 +460,9 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 	case cmd_get_pid:
 		return ok("%ld", (long)swc_window_get_pid(c->win));
 	case cmd_get_title:
-		return ok("%s", c->win->title ? c->win->title : "");
+		return ok("%s", printable(c->win->title, "", text, sizeof(text)));
 	case cmd_get_app_id:
-		return ok("%s", c->win->app_id ? c->win->app_id : "");
+		return ok("%s", printable(c->win->app_id, "", app_id, sizeof(app_id)));
 	case cmd_get_id:
 		chara_client_label(c, label, sizeof(label));
 		return ok("%s", label);
@@ -450,8 +484,11 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		return ok("%d %d", x / 256, y / 256);
 	}
 	case cmd_list_windows: {
-		status s = { .ok = true };
+		status s;
 		size_t o = 0;
+
+		s.ok = true;
+		s.msg[0] = '\0';
 		struct client *other;
 		wl_list_for_each(other, &wm.clients, link) {
 			chara_client_label(other, label, sizeof(label));
@@ -460,17 +497,22 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 			    "%s%s\t%u\t%d %d %u %u\t%s\t%s",
 			    o ? "\n" : "", label, other->ws,
 			    g.x, g.y, g.width, g.height,
-			    other->win->app_id ? other->win->app_id : "-",
-			    other->win->title ? other->win->title : "-");
-			if (n < 0 || (size_t)n >= sizeof(s.msg) - o)
+			    printable(other->win->app_id, "-", app_id, sizeof(app_id)),
+			    printable(other->win->title, "-", text, sizeof(text)));
+			if (n < 0 || (size_t)n >= sizeof(s.msg) - o) {
+				s.msg[o] = '\0'; /* whole lines only, not half of one */
 				break;
+			}
 			o += (size_t)n;
 		}
 		return s;
 	}
 	case cmd_list_monitors: {
-		status s = { .ok = true };
+		status s;
 		size_t o = 0;
+
+		s.ok = true;
+		s.msg[0] = '\0';
 		struct screen *other;
 		wl_list_for_each(other, &wm.screens, link) {
 			int n = snprintf(s.msg + o, sizeof(s.msg) - o,
@@ -478,8 +520,10 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 			    o ? "\n" : "",
 			    other->scr ? swc_screen_get_name(other->scr) : "?",
 			    other->x, other->y, other->width, other->height, other->ws);
-			if (n < 0 || (size_t)n >= sizeof(s.msg) - o)
+			if (n < 0 || (size_t)n >= sizeof(s.msg) - o) {
+				s.msg[o] = '\0'; /* whole lines only, not half of one */
 				break;
+			}
 			o += (size_t)n;
 		}
 		return s;
@@ -545,8 +589,10 @@ handle_line(struct connection *conn, char *line)
 
 	const struct command *cmd = NULL;
 	for (int i = 0; i < cmd_last; ++i)
-		if (commands[i].name && !strcmp(commands[i].name, argv[0]))
+		if (commands[i].name && !strcmp(commands[i].name, argv[0])) {
 			cmd = &commands[i];
+			break;
+		}
 
 	if (!cmd)
 		result = fail("unknown command: %s", argv[0]);

@@ -20,11 +20,17 @@ struct wallpaper {
 	ino_t ino;
 	off_t size;
 	struct timespec mtim;
+	/* The same image as the running configuration's: pixels is left empty
+	 * and chara_wallpaper_adopt takes that one's once this one is in use. */
+	bool borrowed;
 };
 
 /* Decode a regular PNG into owned, premultiplied ARGB8888 pixels. When reuse
- * names the same file, its pixels are copied instead of decoded again. */
+ * names the same file, nothing is decoded or copied: the result is marked
+ * borrowed and gets reuse's pixels from chara_wallpaper_adopt. */
 bool chara_wallpaper_load(struct wallpaper *, const char *path,
                           const struct wallpaper *reuse);
+/* Hand a borrowed wallpaper the pixels it named. `from` gives them up. */
+void chara_wallpaper_adopt(struct wallpaper *, struct wallpaper *from);
 
 #endif

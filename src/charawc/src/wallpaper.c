@@ -8,6 +8,18 @@
 
 #include "config.h"
 
+void
+chara_wallpaper_adopt(struct wallpaper *wallpaper, struct wallpaper *from)
+{
+	if (!wallpaper->borrowed)
+		return;
+	free(wallpaper->pixels);
+	wallpaper->pixels = from->pixels;
+	wallpaper->borrowed = false;
+	from->pixels = NULL;
+	from->decoded = false;
+}
+
 #ifdef CHARA_NO_PNG
 
 /* Built without libspng. Report success so that a config.lua carrying a
@@ -68,22 +80,19 @@ chara_wallpaper_load(struct wallpaper *wallpaper, const char *path,
 		close(fd);
 		return false;
 	}
-	/* The same image as last time: copy what it decoded to rather than
-	 * decoding and premultiplying it all over again. */
+	/* The same image as last time: rather than decoding it all over again,
+	 * or copying up to 64 MiB of it, take over the pixels already decoded
+	 * once this configuration replaces that one. Until then the running
+	 * configuration keeps them, so a reload that fails later loses nothing. */
 	if (same_file(reuse, path, &st)) {
-		size_t bytes = (size_t)reuse->width * reuse->height * 4;
-		uint32_t *copy = malloc(bytes);
-		if (copy) {
-			memcpy(copy, reuse->pixels, bytes);
-			free(wallpaper->pixels);
-			wallpaper->pixels = copy;
-			wallpaper->width = reuse->width;
-			wallpaper->height = reuse->height;
-			note_file(wallpaper, &st);
-			close(fd);
-			return true;
-		}
-		/* Out of memory for the copy; decoding may still fit. */
+		free(wallpaper->pixels);
+		wallpaper->pixels = NULL;
+		wallpaper->width = reuse->width;
+		wallpaper->height = reuse->height;
+		wallpaper->borrowed = true;
+		note_file(wallpaper, &st);
+		close(fd);
+		return true;
 	}
 	FILE *fp = fdopen(fd, "rb");
 	if (!fp) { close(fd); return false; }
@@ -117,11 +126,18 @@ chara_wallpaper_load(struct wallpaper *wallpaper, const char *path,
 	}
 	for (size_t i = 0; i < size; i += 4) {
 		unsigned char *p = pixels + i;
-		uint32_t alpha = p[3];
-		uint32_t argb = (alpha << 24) |
-		    (((p[0] * alpha + 127) / 255) << 16) |
-		    (((p[1] * alpha + 127) / 255) << 8) |
-		    ((p[2] * alpha + 127) / 255);
+		uint32_t alpha = p[3], argb;
+
+		/* Photographs are opaque throughout, and premultiplying by one is
+		 * three divisions a pixel for nothing. */
+		if (alpha == 255)
+			argb = 0xff000000u | (uint32_t)p[0] << 16 |
+			       (uint32_t)p[1] << 8 | p[2];
+		else
+			argb = (alpha << 24) |
+			    (((p[0] * alpha + 127) / 255) << 16) |
+			    (((p[1] * alpha + 127) / 255) << 8) |
+			    ((p[2] * alpha + 127) / 255);
 		memcpy(p, &argb, sizeof(argb));
 	}
 	free(wallpaper->pixels);

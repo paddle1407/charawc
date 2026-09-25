@@ -962,6 +962,60 @@ test_closing_returns_focus_to_the_last_window(void)
 	      wm.cur == other);
 }
 
+/*
+ * A window that did not have the focus closing -- a notification on the other
+ * monitor, say -- is no reason to move it. It used to be handed to whatever
+ * was left on the closing window's monitor.
+ */
+static void
+test_closing_elsewhere_leaves_focus_alone(void)
+{
+	struct client *editor, *popup;
+
+	setup();
+	cursor_known = false;
+	chara_tiling_ws_enable(&screens[0], 1, false);
+	chara_tiling_ws_enable(&screens[1], 1, false);
+	wm.scr = &screens[1];
+	chara_new_window(&windows[0]);
+	chara_new_window(&windows[1]);
+	popup = wm.cur;
+	wm.scr = &screens[0];
+	chara_new_window(&windows[2]);
+	editor = wm.cur;
+	check("the editor has the focus on the first monitor",
+	      editor->scr == &screens[0] && popup->scr == &screens[1]);
+
+	window_handlers[1]->destroy(window_data[1]);
+	check("a window closing on the other monitor leaves it there",
+	      wm.cur == editor);
+}
+
+/*
+ * Stepping onto another monitor with focus_left/right lands on the window used
+ * last there, as closing a window does, not on the one opened first.
+ */
+static void
+test_directional_focus_arrives_on_the_last_used(void)
+{
+	struct client *first, *used, *here;
+
+	setup();
+	cursor_known = false;
+	first = add_client(0, &screens[1]);
+	used = add_client(1, &screens[1]);
+	here = add_client(2, &screens[0]);
+	chara_focus(first);
+	chara_focus(used);
+	chara_focus(here);
+	/* As when the remembered window went away and the memory with it. */
+	screens[1].focus = NULL;
+
+	check("focus_right crosses to the other monitor",
+	      chara_focus_dir(TILE_RIGHT));
+	check("and arrives on the window used there last", wm.cur == used);
+}
+
 int
 main(void)
 {
@@ -984,6 +1038,8 @@ main(void)
 	test_each_workspace_keeps_its_own_layout();
 	test_default_decides_how_windows_arrive();
 	test_closing_returns_focus_to_the_last_window();
+	test_closing_elsewhere_leaves_focus_alone();
+	test_directional_focus_arrives_on_the_last_used();
 	printf("\n%s\n", failures ? "FAILURES" : "all ok");
 	return failures ? 1 : 0;
 }

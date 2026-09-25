@@ -154,8 +154,12 @@ chara_forget_focus(const struct client *c, const struct screen *keep)
 void
 chara_focus(struct client *c)
 {
-	if (chara_overview_on_screen(chara_active_screen()) ||
-	    (c && chara_overview_on_screen(c->scr))) return;
+	/* Asking where the pointer is costs a call into swc, and this runs on
+	 * every enter; there is only something to ask about during an overview. */
+	if (chara_overview_active() &&
+	    (chara_overview_on_screen(chara_active_screen()) ||
+	     (c && chara_overview_on_screen(c->scr))))
+		return;
 	struct client *previous = wm.cur;
 
 	if (c && c->scr)
@@ -529,6 +533,22 @@ chara_restore(struct client *c)
 	chara_focus(c);
 }
 
+/*
+ * Put a window where it can be seen: back from minimized, or its workspace
+ * switched to. Focusing one that is still hidden hands the keyboard to
+ * something nobody can see.
+ */
+void
+chara_bring_up(struct client *c)
+{
+	if (!c)
+		return;
+	if (c->minimized)
+		chara_restore(c);
+	else if (c->scr && c->ws != c->scr->ws)
+		chara_ws_go_to(c->scr, c->ws);
+}
+
 /* ---------------------------------------------------------------- rules */
 
 static void
@@ -635,6 +655,10 @@ on_destroy(void *data)
 {
 	struct client *c = data;
 	struct screen *s = c->scr;
+	/* Only a window that had the focus hands it on. A notification closing
+	 * on the other monitor, or a window on a workspace nobody is looking at,
+	 * used to drag the focus over to whatever was left beside it. */
+	bool had_focus = wm.cur == c;
 
 	if (wm.grab.client == c) {
 		wm.grab.active = false;
@@ -650,7 +674,7 @@ on_destroy(void *data)
 	free(c);
 	chara_overview_refresh();
 
-	if (s)
+	if (had_focus && s)
 		chara_focus(chara_first_on(s));
 }
 
@@ -709,10 +733,7 @@ on_request_activate(void *data)
 	struct client *c = data;
 	if (chara_overview_on_screen(c->scr)) return;
 
-	if (c->minimized)
-		chara_restore(c);
-	else if (c->scr && c->ws != c->scr->ws)
-		chara_ws_go_to(c->scr, c->ws);
+	chara_bring_up(c);
 	/* Picking a window out of a taskbar means wanting to see it, so this one
 	 * is not optional: a raise is the whole point of the request. */
 	swc_window_raise(c->win);
@@ -1087,7 +1108,11 @@ chara_bind_mouse(uint32_t mod)
 	 * call has to go first. Without that a reload leaves another pair behind
 	 * every time, and since the oldest match wins, a changed mod would keep
 	 * moving and resizing windows under the modifier it replaced. Removing a
-	 * binding mid-press releases it, which is what the handlers expect. */
+	 * binding mid-press releases it, which is what the handlers expect --
+	 * and also why a reload that kept the same mod leaves the pair alone
+	 * rather than cutting short a drag that is under way. */
+	if (have_bound && bound == mod)
+		return;
 	if (have_bound) {
 		swc_remove_binding(SWC_BINDING_BUTTON, bound, BTN_LEFT);
 		swc_remove_binding(SWC_BINDING_BUTTON, bound, BTN_RIGHT);
@@ -1103,19 +1128,17 @@ chara_bind_mouse(uint32_t mod)
 void
 chara_action_run(const struct action *a)
 {
-	char idbuf[CHARA_NAME_MAX + 16], *argv[6];
+	char *argv[6];
 	char numbers[4][16];
 	int argc = 0;
 
 	const struct command *cmd = &commands[a->command];
-	if (cmd->selects) {
-		if (a->selector) {
-			argv[argc++] = a->selector;
-		} else {
-			chara_client_label(wm.cur, idbuf, sizeof(idbuf));
-			argv[argc++] = wm.cur ? idbuf : (char *)"focused";
-		}
-	}
+	/* The selector has to hold its place ahead of any numbers. "focused"
+	 * resolves straight to wm.cur, where writing out the focused window's
+	 * label only for dispatch to search the window list for it again did
+	 * not, and failed `restore` outright once nothing had the focus. */
+	if (cmd->selects)
+		argv[argc++] = a->selector ? a->selector : (char *)"focused";
 	for (unsigned i = 0; i < a->argc && i < 4; ++i) {
 		snprintf(numbers[i], sizeof(numbers[i]), "%d", a->args[i]);
 		argv[argc++] = numbers[i];
