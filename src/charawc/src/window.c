@@ -160,6 +160,8 @@ chara_focus(struct client *c)
 
 	if (c && c->scr)
 		c->scr->focus = c;
+	if (c)
+		c->focused = ++wm.focus_order;
 	/* Applying a decoration resets the compositor's titlebar hover state, so
 	 * redrawing a window that is already focused would clear the highlight
 	 * and re-render the bar on every pointer motion across it. */
@@ -189,12 +191,19 @@ chara_first_on(struct screen *s)
 {
 	struct client *c;
 
+	struct client *best = NULL;
+
 	if (s->focus && on_workspace(s->focus, s))
 		return s->focus;
+	/* The window used last, not the one opened first: a window that closes
+	 * or is minimized hands focus back to whatever the user was in before
+	 * it. Clipboard tools open and close one on every copy and paste, and
+	 * falling back in creation order dropped the user into whichever window
+	 * they had happened to start first. */
 	wl_list_for_each(c, &wm.clients, link)
-		if (on_workspace(c, s))
-			return c;
-	return NULL;
+		if (on_workspace(c, s) && (!best || c->focused > best->focused))
+			best = c;
+	return best;
 }
 
 void

@@ -43,6 +43,7 @@ struct client {
 	bool visible, fullscreen, maximized, titlebar, movable, resizable;
 	bool pinned; /* kept above the other windows */
 	uint64_t minimized; /* zero when normal, otherwise most-recent order */
+	uint64_t focused;   /* zero if never focused, otherwise most-recent order */
 
 	/* Where the window sits, and how big it is. */
 	int32_t  x, y;
@@ -160,6 +161,7 @@ struct wm {
 	struct grab   grab;
 	uint32_t      last_id;
 	uint64_t      minimize_order;
+	uint64_t      focus_order;
 
 	volatile sig_atomic_t running;
 };

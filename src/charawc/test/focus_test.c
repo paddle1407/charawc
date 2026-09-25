@@ -928,6 +928,40 @@ test_overview_reclaim(void)
 	      !chara_overview_active() && overview_input == NULL);
 }
 
+/*
+ * Clipboard tools such as wl-copy, which micro runs on every copy, paste and
+ * mouse selection, open a throwaway window to get keyboard focus and close it
+ * straight away. Focus has to go back to the window that had it, not to
+ * whichever window happens to have been opened first -- which used to throw
+ * the user out of their editor and into their browser.
+ */
+static void
+test_closing_returns_focus_to_the_last_window(void)
+{
+	struct client *browser, *editor, *other;
+
+	setup();
+	chara_tiling_ws_enable(&screens[0], 1, false);
+	chara_new_window(&windows[0]);
+	browser = wm.cur;
+	chara_new_window(&windows[1]);
+	chara_new_window(&windows[2]);
+	other = wm.cur;
+	editor = window_data[1];
+	chara_focus(browser);
+	chara_focus(other);
+	chara_focus(editor);
+
+	chara_new_window(&windows[3]);
+	window_handlers[3]->destroy(window_data[3]);
+	check("closing a window gives focus back to the one before it",
+	      wm.cur == editor);
+
+	chara_minimize(editor);
+	check("and minimizing one hands it to the last one used",
+	      wm.cur == other);
+}
+
 int
 main(void)
 {
@@ -949,6 +983,7 @@ main(void)
 	test_rule_can_float_and_pin();
 	test_each_workspace_keeps_its_own_layout();
 	test_default_decides_how_windows_arrive();
+	test_closing_returns_focus_to_the_last_window();
 	printf("\n%s\n", failures ? "FAILURES" : "all ok");
 	return failures ? 1 : 0;
 }
