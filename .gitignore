@@ -8,6 +8,7 @@
 /src/charawc/charawc
 /src/charawc/charactl
 /src/charawc/.png-*
+/src/charawc/.build-config*
 /src/charawc/test/*_test
 
 # Compiler output and crash dumps

@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -427,7 +428,7 @@ parse_commands(lua_State *L, struct wl_list *list, int index, const char *path)
 			lua_pop(L, 1);
 			if (strcmp(path, "exec_once"))
 				luaL_error(L, "%s: startup controls are only supported in exec_once", p);
-			FIELDS(L, t, p, "argv", "wait", "ready_socket", "stop_on_exit", "timeout_ms");
+			FIELDS(L, t, p, "argv", "wait", "ready_socket", "stop_on_exit", "timeout_ms", "input_method");
 			if (field(L, t, "wait")) { c->wait = boolean(L, -1, p); lua_pop(L, 1); }
 			if (field(L, t, "stop_on_exit")) { c->stop_on_exit = boolean(L, -1, p); lua_pop(L, 1); }
 			if (field(L, t, "ready_socket")) { copy_string(L, &c->ready_socket, -1, p, false); lua_pop(L, 1); }
@@ -441,6 +442,9 @@ parse_commands(lua_State *L, struct wl_list *list, int index, const char *path)
 				luaL_error(L, "%s: choose wait or ready_socket, not both", p);
 			if (c->ready_socket && !c->stop_on_exit)
 				luaL_error(L, "%s: ready_socket requires stop_on_exit", p);
+			if (field(L, t, "input_method")) { c->input_method = boolean(L, -1, p); lua_pop(L, 1); }
+			if (c->input_method && !c->stop_on_exit)
+				luaL_error(L, "%s: input_method requires stop_on_exit", p);
 		} else {
 			parse_argv(L, &c->argv, t, p);
 		}
@@ -848,21 +852,43 @@ parse_tiling(lua_State *L, struct config *cfg, int index)
 
 /* ------------------------------------------------------------------ bar */
 
-/* charabar reads this section itself. charaWC validates it so a mistake is
- * reported once, at the same place as every other setting. */
+/* Validate this section and pass its exact values to charabar. */
+
+static bool
+valid_utf8(const char *text)
+{
+	const unsigned char *p = (const unsigned char *)text;
+	while (*p) {
+		uint32_t code = *p++;
+		unsigned count;
+		uint32_t minimum;
+		if (code < 0x80) continue;
+		if (code >= 0xc2 && code <= 0xdf) { count = 1; minimum = 0x80; code &= 0x1f; }
+		else if (code >= 0xe0 && code <= 0xef) { count = 2; minimum = 0x800; code &= 0x0f; }
+		else if (code >= 0xf0 && code <= 0xf4) { count = 3; minimum = 0x10000; code &= 0x07; }
+		else return false;
+		while (count--) {
+			if ((*p & 0xc0) != 0x80) return false;
+			code = (code << 6) | (*p++ & 0x3f);
+		}
+		if (code < minimum || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff))
+			return false;
+	}
+	return true;
+}
 
 static void
-bar_string(lua_State *L, int index, const char *name, const char *path, bool empty)
+bar_string(lua_State *L, int index, const char *name, const char *path, bool empty, size_t size)
 {
 	if (field(L, index, name)) {
-		string(L, -1, path, empty);
+		const char *value = string(L, -1, path, empty);
+		if (strlen(value) >= size || !valid_utf8(value))
+			luaL_error(L, "%s: expected UTF-8 with at most %d bytes", path, (int)size - 1);
 		lua_pop(L, 1);
 	}
 }
 
-/* charaWC keeps only bar.enabled, but charabar reads every other setting in
- * the section itself, once, at startup. Hashing the table is what lets a
- * reload notice a change charaWC never stores, such as a module's format. */
+/* Hash the validated table to restart the bar only when its values change. */
 
 #define BAR_DIGEST_MAX_KEYS 64
 #define BAR_DIGEST_MAX_DEPTH 8
@@ -959,6 +985,64 @@ digest_value(lua_State *L, int index, int depth, uint64_t *hash)
 	}
 }
 
+struct bar_snapshot {
+	char text[16384];
+	size_t used;
+};
+
+static void
+snapshot_add(lua_State *L, struct bar_snapshot *buffer, const char *text, size_t size)
+{
+	if (size >= sizeof(buffer->text) - buffer->used)
+		luaL_error(L, "bar snapshot exceeds 16 KiB");
+	memcpy(buffer->text + buffer->used, text, size);
+	buffer->used += size;
+	buffer->text[buffer->used] = '\0';
+}
+#define SNAPSHOT_TEXT(L, buffer, text) snapshot_add(L, buffer, text, strlen(text))
+
+static void
+bar_literal(lua_State *L, int index, struct bar_snapshot *buffer, unsigned depth)
+{
+	index = lua_absindex(L, index);
+	if (depth > BAR_DIGEST_MAX_DEPTH) luaL_error(L, "bar snapshot too deeply nested");
+	luaL_checkstack(L, 4, "bar snapshot");
+	switch (lua_type(L, index)) {
+	case LUA_TSTRING: {
+		const unsigned char *text = (const unsigned char *)lua_tostring(L, index);
+		SNAPSHOT_TEXT(L, buffer, "\"");
+		for (; *text; ++text) {
+			if (*text == '"' || *text == '\\') {
+				SNAPSHOT_TEXT(L, buffer, "\\");
+				snapshot_add(L, buffer, (const char *)text, 1);
+			} else if (*text < 32 || *text >= 127) {
+				char escape[5];
+				snprintf(escape, sizeof(escape), "\\%03u", *text);
+				SNAPSHOT_TEXT(L, buffer, escape);
+			} else snapshot_add(L, buffer, (const char *)text, 1);
+		}
+		SNAPSHOT_TEXT(L, buffer, "\""); break;
+	}
+	case LUA_TNUMBER: {
+		char number[32];
+		snprintf(number, sizeof(number), "%" PRId64, (int64_t)lua_tointeger(L, index));
+		SNAPSHOT_TEXT(L, buffer, number); break;
+	}
+	case LUA_TBOOLEAN:
+		SNAPSHOT_TEXT(L, buffer, lua_toboolean(L, index) ? "true" : "false"); break;
+	case LUA_TTABLE:
+		SNAPSHOT_TEXT(L, buffer, "{");
+		lua_pushnil(L);
+		while (lua_next(L, index)) {
+			SNAPSHOT_TEXT(L, buffer, "["); bar_literal(L, -2, buffer, depth + 1);
+			SNAPSHOT_TEXT(L, buffer, "]="); bar_literal(L, -1, buffer, depth + 1);
+			SNAPSHOT_TEXT(L, buffer, ","); lua_pop(L, 1);
+		}
+		SNAPSHOT_TEXT(L, buffer, "}"); break;
+	default: luaL_error(L, "bar snapshot has an invalid value");
+	}
+}
+
 static void
 parse_bar(lua_State *L, struct config *cfg, int index)
 {
@@ -984,7 +1068,7 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 			lua_pop(L, 1);
 		}
 	}
-	bar_string(L, index, "font", "bar.font", false);
+	bar_string(L, index, "font", "bar.font", false, BAR_FONT_SIZE);
 	if (field(L, index, "padding")) { integer(L, -1, "bar.padding", BAR_PADDING_MIN, BAR_PADDING_MAX); lua_pop(L, 1); }
 	if (field(L, index, "spacing")) { integer(L, -1, "bar.spacing", BAR_SPACING_MIN, BAR_SPACING_MAX); lua_pop(L, 1); }
 
@@ -1009,13 +1093,13 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 		int t = lua_gettop(L);
 		FIELDS(L, t, "bar.workspaces", "count", "format");
 		if (field(L, t, "count")) { integer(L, -1, "bar.workspaces.count", BAR_WORKSPACES_COUNT_MIN, BAR_WORKSPACES_COUNT_MAX); lua_pop(L, 1); }
-		bar_string(L, t, "format", "bar.workspaces.format", false);
+		bar_string(L, t, "format", "bar.workspaces.format", false, BAR_WORKSPACE_FORMAT_SIZE);
 		lua_pop(L, 1);
 	}
 	if (field(L, index, "window")) {
 		int t = lua_gettop(L);
 		FIELDS(L, t, "bar.window", "empty", "max_length");
-		bar_string(L, t, "empty", "bar.window.empty", true);
+		bar_string(L, t, "empty", "bar.window.empty", true, BAR_WINDOW_EMPTY_SIZE);
 		if (field(L, t, "max_length")) { integer(L, -1, "bar.window.max_length", BAR_WINDOW_MAX_LENGTH_MIN, BAR_WINDOW_MAX_LENGTH_MAX); lua_pop(L, 1); }
 		lua_pop(L, 1);
 	}
@@ -1039,15 +1123,15 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 		int t = lua_gettop(L);
 		if (!strcmp(timed[i], "network")) {
 			FIELDS(L, t, "bar.network", "format_online", "format_offline", "interval");
-			bar_string(L, t, "format_online", "bar.network.format_online", false);
-			bar_string(L, t, "format_offline", "bar.network.format_offline", true);
+			bar_string(L, t, "format_online", "bar.network.format_online", false, BAR_MODULE_FORMAT_SIZE);
+			bar_string(L, t, "format_offline", "bar.network.format_offline", true, BAR_MODULE_FORMAT_SIZE);
 		} else if (!strcmp(timed[i], "volume")) {
 			FIELDS(L, t, "bar.volume", "format", "format_muted", "interval");
-			bar_string(L, t, "format", "bar.volume.format", false);
-			bar_string(L, t, "format_muted", "bar.volume.format_muted", true);
+			bar_string(L, t, "format", "bar.volume.format", false, BAR_MODULE_FORMAT_SIZE);
+			bar_string(L, t, "format_muted", "bar.volume.format_muted", true, BAR_MODULE_FORMAT_SIZE);
 		} else {
 			FIELDS(L, t, "bar timed module", "format", "interval");
-			bar_string(L, t, "format", "bar module format", false);
+			bar_string(L, t, "format", "bar module format", false, !strcmp(timed[i], "clock") ? BAR_CLOCK_FORMAT_SIZE : BAR_MODULE_FORMAT_SIZE);
 		}
 		/* The volume module also refreshes on SIGUSR1, so 0 means "never
 		 * poll". The others have no such trigger and would simply freeze. */
@@ -1062,6 +1146,13 @@ parse_bar(lua_State *L, struct config *cfg, int index)
 	/* Last, so a rejected section is reported rather than digested. */
 	cfg->bar.digest = BAR_DIGEST_BASIS;
 	digest_value(L, index, 0, &cfg->bar.digest);
+	struct bar_snapshot snapshot = { .used = 0 };
+	SNAPSHOT_TEXT(L, &snapshot, "return {bar=");
+	bar_literal(L, index, &snapshot, 0);
+	SNAPSHOT_TEXT(L, &snapshot, "}");
+	lua_pushlstring(L, snapshot.text, snapshot.used);
+	copy_string(L, &cfg->bar.source, -1, "bar snapshot", false);
+	lua_pop(L, 1);
 }
 
 /* ----------------------------------------------------------------- load */
@@ -1369,6 +1460,7 @@ chara_config_finish(struct config *cfg)
 	}
 	free(cfg->values.title_format);
 	free(cfg->cursor_theme);
+	free(cfg->bar.source);
 	free(cfg->wallpaper.path);
 	free(cfg->wallpaper.pixels);
 	decor_destroy(cfg->decoration);
@@ -1397,6 +1489,7 @@ chara_config_move(struct config *dst, struct config *src)
 	 * second owner to anything that finished src afterwards. */
 	src->values.title_format = NULL;
 	src->cursor_theme = NULL;
+	src->bar.source = NULL;
 	src->wallpaper.path = NULL;
 	src->wallpaper.pixels = NULL;
 	src->wallpaper.decoded = false;

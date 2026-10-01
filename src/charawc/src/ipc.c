@@ -172,11 +172,7 @@ place(struct client *c, struct swc_rectangle g)
 	if (g.width < 1 || g.height < 1)
 		return fail("size must be positive");
 
-	swc_window_set_geometry(c->win, &g);
-	c->x = g.x;
-	c->y = g.y;
-	c->width = g.width;
-	c->height = g.height;
+	chara_place(c, g);
 	return ok("");
 }
 
@@ -205,6 +201,12 @@ static struct swc_rectangle
 geometry_of(struct client *c)
 {
 	struct swc_rectangle g;
+	/* Successive commands must build on the latest requested placement,
+	 * even before a client acknowledges its previous configure. Actual
+	 * floating sizes are kept current by the geometry callback. */
+	if (!c->tiled && !c->fullscreen && !c->maximized &&
+	    !(wm.grab.active && wm.grab.client == c))
+		return (struct swc_rectangle){c->x, c->y, c->width, c->height};
 	if (!swc_window_get_geometry(c->win, &g))
 		g = (struct swc_rectangle){ c->x, c->y, c->width, c->height };
 	return g;
@@ -230,8 +232,10 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		if (!c && (named || cmd->command != cmd_restore))
 			return fail("no such window: %s", selector ? selector : "focused");
 	}
+	if (cmd->command == cmd_restore && c && !c->minimized &&
+	    (argc == 0 || !strcmp(argv[0], "focused"))) c = NULL;
 	int provided = argc - first;
-	if (provided < cmd->argc)
+	if (provided < cmd->argc || provided > cmd->argc + cmd->optional)
 		return fail("usage: %s %s", cmd->name, cmd->usage);
 
 	/* Numeric arguments, when the command takes them. The optional ones are
@@ -314,12 +318,11 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 		chara_restore(c);
 		return ok("");
 	case cmd_hide:
-		swc_window_hide(c->win);
-		c->visible = false;
+		chara_set_hidden(c, true);
 		return ok("");
 	case cmd_show:
-		swc_window_show(c->win);
-		c->visible = true;
+		chara_set_hidden(c, false);
+		chara_bring_up(c);
 		return ok("");
 	case cmd_raise:
 		swc_window_raise(c->win);
@@ -541,12 +544,21 @@ chara_ipc_dispatch(const struct command *cmd, int argc, char **argv)
 
 /* ------------------------------------------------------------- transport */
 
+#define IPC_MAX_CONNECTIONS 64
+#define IPC_TIMEOUT_MS 10000
+#define IPC_OUTPUT_LIMIT (16 * MAXSIZE)
+
 struct connection {
-	struct wl_event_source *source;
+	struct wl_list link;
+	struct wl_event_source *source, *timeout;
 	int fd;
-	size_t used;
-	char buffer[MAXSIZE];
+	size_t used, output_used, output_sent;
+	bool eof;
+	char buffer[MAXSIZE + 1];
+	char output[IPC_OUTPUT_LIMIT];
 };
+static struct wl_list connections = { &connections, &connections };
+static unsigned connection_count;
 
 static int listen_fd = -1;
 static struct wl_event_source *listen_source;
@@ -560,6 +572,9 @@ static void
 connection_close(struct connection *conn)
 {
 	wl_event_source_remove(conn->source);
+	wl_event_source_remove(conn->timeout);
+	wl_list_remove(&conn->link);
+	--connection_count;
 	close(conn->fd);
 	free(conn);
 }
@@ -577,64 +592,103 @@ split(char *line, char **argv, int max)
 	return argc;
 }
 
-static void
+static bool
+queue_reply(struct connection *conn, status result)
+{
+	/* Reclaim bytes sent before appending; never grow per-client storage. */
+	if (conn->output_sent) {
+		conn->output_used -= conn->output_sent;
+		memmove(conn->output, conn->output + conn->output_sent, conn->output_used);
+		conn->output_sent = 0;
+	}
+	size_t room = sizeof(conn->output) - conn->output_used;
+	int n = snprintf(conn->output + conn->output_used, room, "%s%s%s\n",
+	    result.ok ? "ok" : "error", result.msg[0] ? " " : "", result.msg);
+	if (n < 0 || (size_t)n >= room) return false;
+	conn->output_used += (size_t)n;
+	return true;
+}
+
+static bool
 handle_line(struct connection *conn, char *line)
 {
 	char *argv[16];
 	int argc = split(line, argv, 16);
-	status result;
-
-	if (!argc)
-		return;
-
+	if (!argc) return queue_reply(conn, fail("empty request"));
 	const struct command *cmd = NULL;
 	for (int i = 0; i < cmd_last; ++i)
 		if (commands[i].name && !strcmp(commands[i].name, argv[0])) {
-			cmd = &commands[i];
-			break;
+			cmd = &commands[i]; break;
 		}
+	status result = cmd ? chara_ipc_dispatch(cmd, argc - 1, argv + 1)
+	    : fail("unknown command: %s", argv[0]);
+	return queue_reply(conn, result);
+}
 
-	if (!cmd)
-		result = fail("unknown command: %s", argv[0]);
-	else
-		result = chara_ipc_dispatch(cmd, argc - 1, argv + 1);
-
-	dprintf(conn->fd, "%s%s%s\n", result.ok ? "ok" : "error",
-	        result.msg[0] ? " " : "", result.msg);
+static int
+connection_timeout(void *data)
+{
+	connection_close(data);
+	return 0;
 }
 
 static int
 connection_readable(int fd, uint32_t mask, void *data)
 {
 	struct connection *conn = data;
-
-	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) {
-		connection_close(conn);
-		return 0;
+	if (mask & WL_EVENT_ERROR) goto close;
+	if (!conn->eof && (mask & (WL_EVENT_READABLE | WL_EVENT_HANGUP))) {
+		ssize_t n = read(fd, conn->buffer + conn->used,
+		    sizeof(conn->buffer) - conn->used - 1);
+		if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+			goto close;
+		if (n == 0) {
+			conn->eof = true;
+			if (conn->used) {
+				if (!queue_reply(conn, fail("request must end with a newline"))) goto close;
+				conn->used = 0;
+			}
+		}
+		if (n > 0) {
+			conn->used += (size_t)n;
+			conn->buffer[conn->used] = '\0';
+			/* Embedded NUL must not hide trailing data from the line parser. */
+			if (memchr(conn->buffer, '\0', conn->used)) goto close;
+			char *line = conn->buffer, *end;
+			while ((end = strchr(line, '\n'))) {
+				*end = '\0';
+				if (!handle_line(conn, line)) goto close;
+				line = end + 1;
+			}
+			conn->used = strlen(line);
+			memmove(conn->buffer, line, conn->used + 1);
+			if (conn->used + 1 >= sizeof(conn->buffer)) {
+				if (!queue_reply(conn, fail("request too long"))) goto close;
+				conn->eof = true;
+				conn->used = 0;
+			}
+			wl_event_source_timer_update(conn->timeout, IPC_TIMEOUT_MS);
+		}
 	}
-	ssize_t n = read(fd, conn->buffer + conn->used,
-	                 sizeof(conn->buffer) - conn->used - 1);
-	if (n <= 0) {
-		if (n < 0 && (errno == EAGAIN || errno == EINTR))
-			return 0;
-		connection_close(conn);
-		return 0;
+	while (conn->output_sent < conn->output_used) {
+		ssize_t n = send(fd, conn->output + conn->output_sent,
+		    conn->output_used - conn->output_sent, MSG_NOSIGNAL);
+		if (n < 0 && errno == EINTR) continue;
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+		if (n <= 0) goto close;
+		conn->output_sent += (size_t)n;
+		wl_event_source_timer_update(conn->timeout, IPC_TIMEOUT_MS);
 	}
-	conn->used += (size_t)n;
-	conn->buffer[conn->used] = '\0';
-
-	char *line = conn->buffer, *end;
-	while ((end = strchr(line, '\n'))) {
-		*end = '\0';
-		handle_line(conn, line);
-		line = end + 1;
+	if (conn->output_sent == conn->output_used) {
+		conn->output_sent = conn->output_used = 0;
+		if (conn->eof) goto close;
 	}
-	conn->used = strlen(line);
-	memmove(conn->buffer, line, conn->used + 1);
-	if (conn->used + 1 >= sizeof(conn->buffer)) {
-		dprintf(conn->fd, "error request too long\n");
-		connection_close(conn);
-	}
+	uint32_t events = conn->eof ? 0 : WL_EVENT_READABLE;
+	if (conn->output_used) events |= WL_EVENT_WRITABLE;
+	wl_event_source_fd_update(conn->source, events);
+	return 0;
+close:
+	connection_close(conn);
 	return 0;
 }
 
@@ -683,6 +737,11 @@ listener_readable(int fd, uint32_t mask, void *data)
 			}
 			return 0;
 		}
+		if (connection_count >= IPC_MAX_CONNECTIONS) {
+			close(client);
+			back_off();
+			return 0;
+		}
 		struct connection *conn = calloc(1, sizeof(*conn));
 		if (!conn) {
 			close(client);
@@ -698,6 +757,14 @@ listener_readable(int fd, uint32_t mask, void *data)
 			back_off();
 			return 0;
 		}
+		conn->timeout = wl_event_loop_add_timer(event_loop, connection_timeout, conn);
+		if (!conn->timeout) {
+			wl_event_source_remove(conn->source);
+			close(client); free(conn); back_off(); return 0;
+		}
+		wl_list_insert(connections.prev, &conn->link);
+		++connection_count;
+		wl_event_source_timer_update(conn->timeout, IPC_TIMEOUT_MS);
 	}
 }
 
@@ -750,6 +817,9 @@ chara_ipc_init(struct wl_event_loop *loop)
 void
 chara_ipc_finish(void)
 {
+	struct connection *conn, *tmp;
+	wl_list_for_each_safe(conn, tmp, &connections, link)
+		connection_close(conn);
 	if (listen_source)
 		wl_event_source_remove(listen_source);
 	if (resume_timer)

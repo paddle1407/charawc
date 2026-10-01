@@ -31,8 +31,18 @@ SRC   = src/charawc.c src/window.c src/border.c src/ipc.c \
         src/config.c src/bindings.c src/startup.c src/wallpaper.c src/log.c \
         src/tiling.c src/tiling_layout.c src/overview.c src/overview_layout.c
 HDR   = $(wildcard include/*.h)
+SWC_HDR = $(wildcard $(shell $(PKG_CONFIG) --variable=includedir swc)/swc.h)
+SWC_LIB = $(wildcard $(shell $(PKG_CONFIG) --variable=libdir swc)/libswc.so)
 
-.PHONY: all clean test
+define BUILD_CONFIG
+CC=$(CC)
+CPPFLAGS=$(CPPFLAGS)
+CFLAGS=$(CFLAGS)
+LDFLAGS=$(LDFLAGS)
+LDLIBS=$(LDLIBS)
+endef
+
+.PHONY: all clean test FORCE
 all: charawc charactl
 
 # Switching PNG on or off changes how charawc is linked but touches no source
@@ -42,12 +52,19 @@ all: charawc charactl
 .png-$(PNG):
 	@rm -f .png-* && touch $@
 
-charawc: $(SRC) $(HDR) Makefile .png-$(PNG)
+# Record flags as data through make's file function, so shell quotes and
+# $ORIGIN in linker flags are never interpreted while writing the stamp.
+FORCE:
+.build-config: FORCE
+	$(file >$@.next,$(BUILD_CONFIG))
+	@if cmp -s $@.next $@; then rm -f $@.next; else mv -f $@.next $@; fi
+
+charawc: $(SRC) $(HDR) $(SWC_HDR) $(SWC_LIB) Makefile .png-$(PNG) .build-config
 	@$(PKG_CONFIG) --atleast-version=5.2 "$(LUA_PKG)" || \
 	  { echo "Lua 5.2+ development files are required; set LUA_PKG" >&2; exit 1; }
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ $(SRC) $(LDLIBS)
 
-charactl: src/charactl.c Makefile
+charactl: src/charactl.c Makefile .build-config
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/charactl.c
 
 # The unit tests link the real window manager sources against stubs, so they
@@ -72,4 +89,4 @@ test/overview_test: test/overview_test.c src/overview_layout.c include/overview.
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test/overview_test.c src/overview_layout.c -lm
 
 clean:
-	rm -f charawc charactl .png-* $(TESTS)
+	rm -f charawc charactl .png-* .build-config .build-config.next $(TESTS)

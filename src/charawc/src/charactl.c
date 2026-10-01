@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -74,13 +75,20 @@ main(int argc, char **argv)
 		fprintf(stderr, "charactl: %s\n", strerror(errno));
 		return 1;
 	}
+	struct timeval timeout = {.tv_sec = 10};
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 ||
+	    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+		fprintf(stderr, "charactl: %s\n", strerror(errno));
+		close(fd);
+		return 1;
+	}
 	if (connect(fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
 		fprintf(stderr, "charactl: %s: %s\n", path, strerror(errno));
 		close(fd);
 		return 1;
 	}
 	for (size_t sent = 0; sent < used;) {
-		ssize_t n = write(fd, request + sent, used - sent);
+		ssize_t n = send(fd, request + sent, used - sent, MSG_NOSIGNAL);
 		if (n < 0 && errno == EINTR)
 			continue;
 		if (n <= 0) {
@@ -98,8 +106,12 @@ main(int argc, char **argv)
 		ssize_t n = read(fd, reply + got, sizeof(reply) - 1 - got);
 		if (n < 0 && errno == EINTR)
 			continue;
-		if (n <= 0)
-			break;
+		if (n < 0) {
+			fprintf(stderr, "charactl: %s\n", strerror(errno));
+			close(fd);
+			return 1;
+		}
+		if (n == 0) break;
 		got += (size_t)n;
 	}
 	close(fd);

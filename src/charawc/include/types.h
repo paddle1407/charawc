@@ -40,7 +40,8 @@ struct client {
 	char     name[CHARA_NAME_MAX];     /* rule-assigned name, or empty */
 	unsigned ordinal;                  /* nth window using that name */
 
-	bool visible, fullscreen, maximized, titlebar, movable, resizable;
+	bool visible, hidden, fullscreen, maximized, titlebar, movable, resizable;
+	bool placing; /* suppress synchronous geometry callbacks during placement */
 	bool pinned; /* kept above the other windows */
 	uint64_t minimized; /* zero when normal, otherwise most-recent order */
 	uint64_t focused;   /* zero if never focused, otherwise most-recent order */

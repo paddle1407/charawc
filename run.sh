@@ -44,7 +44,11 @@ cat "$LOG"
 # started.
 status_file=$(mktemp)
 trap 'rm -f -- "$status_file"' EXIT INT TERM
-{ swc-launch -t "$TTY" -- "$CHARAWC" "$@" 2>&1; echo $? >"$status_file"; } |
+{
+	launch_status=0
+	swc-launch -t "$TTY" -- "$CHARAWC" "$@" 2>&1 || launch_status=$?
+	echo "$launch_status" >"$status_file"
+} |
 	tee -a "$LOG"
 status=$(cat -- "$status_file" 2>/dev/null || echo 1)
 [ -n "$status" ] || status=1

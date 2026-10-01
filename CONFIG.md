@@ -218,6 +218,9 @@ Neither disturbs the layout, and a client asking to be maximized on its own is
 ignored while it is tiled -- otherwise applications that start maximized would
 jump out of the grid before you saw them in it.
 
+A workspace holds up to 256 tiled windows. Additional windows stay floating;
+moving a tile to a full workspace also makes it float, with a log message.
+
 ---
 
 ## Overview
@@ -264,6 +267,8 @@ the existing overview alone.
 VT switching remains available. Session lock, VT deactivation, changes to the
 overview monitor, configuration reload, and `charactl` mutations targeting that
 monitor end the mode. Cancelling from another monitor preserves its focus.
+For more than 64 windows, overview uses a regular grid with preserved aspect
+ratios to bound the layout work. Every window remains selectable.
 New windows join the layout; closed windows leave it. Minimized windows carry a
 label, or a small marker when labels are disabled.
 
@@ -469,7 +474,8 @@ Key names come from xkbcommon: `Return`, `space`, `BackSpace`, `Tab`, `Escape`,
 
 Leaving `bindings` out entirely gives a default set: `mod+Return` a terminal,
 `mod+q` close, `mod+f` maximize, `mod+shift+f` fullscreen, `mod+m`/`mod+n`
-minimize and restore, `mod+c` centre, `mod+j`/`mod+k` focus, `mod+1`..`mod+9`
+minimize and restore, `mod+c` centre, `mod+h`/`mod+j`/`mod+k`/`mod+l`
+focus left/down/up/right, `mod+1`..`mod+9`
 workspaces, `mod+shift+r` reload, `mod+shift+e` quit.
 
 ## Mouse
@@ -561,20 +567,35 @@ only in `exec_once`:
 | `argv` | The command. Required in the table form. |
 | `wait` | Finish this command before starting the next. |
 | `ready_socket` | Wait until this socket in `XDG_RUNTIME_DIR` accepts a connection. |
-| `stop_on_exit` | Stop the program when charaWC exits. Required with `ready_socket`. |
+| `stop_on_exit` | Stop the program when charaWC exits. Required with `ready_socket` or `input_method`. |
+| `input_method` | Trust this foreground service to use the privileged input-method protocol. Default `false`. |
 | `timeout_ms` | How long to wait, 100 to 60000. Default 10000. |
 
 Commands run in order. If one fails or times out, the rest are skipped and the
 reason is logged.
 
+Input methods can receive keyboard events and surrounding text, so only a
+service explicitly marked `input_method = true` may bind that protocol. Use
+its foreground mode in an `exec_once` table with `stop_on_exit = true`; only
+the directly launched process is trusted, not daemonized descendants. For
+example, pass the foreground option supported by your input-method program.
+Screen locking also suspends input-method forwarding.
+
 ## The bar
 
-charabar is a separate program that reads the same `config.lua`. Set
-`bar.enabled = true` and charaWC starts and stops it with the session.
+charabar is a separate program. Set `bar.enabled = true` and charaWC starts
+and stops it with the session, passing the bar values it validated from `config.lua`.
 
-charabar reads its configuration once, when it starts, so charaWC restarts it
-on a reload whenever anything in the `bar` section changed. A reload that
-leaves the section alone leaves the running bar alone.
+charabar receives a snapshot of the validated bar section when it starts, so
+charaWC restarts it on a reload whenever that section changes. A reload that
+leaves the section alone leaves the running bar alone. Lua expressions are
+therefore evaluated once per compositor load, including random values and
+environment lookups. A manually started `charabar -c config.lua` still reads
+that file directly.
+
+Bar strings must be valid UTF-8. Font, clock format and empty-window text
+allow up to 127 bytes each; workspace and other module formats allow 63.
+Longer strings are reported during configuration validation.
 
 ```lua
 bar = {
@@ -654,6 +675,8 @@ how often the clock is re-read, in seconds; keep it well under a minute for a
 ## charactl
 
 `charactl` sends one command to the running compositor and prints the reply.
+IPC connections time out after ten seconds without progress and are capped at
+64 simultaneous clients; queued replies are bounded to 64 KiB per client.
 Commands marked with a window take a selector first, defaulting to the focused
 window.
 
@@ -678,7 +701,7 @@ charactl list_windows
 | `maximize` | `<window>` — toggles |
 | `minimize` | `<window>` |
 | `restore` | `[window]` — without one, the most recently minimized |
-| `hide`, `show` | `<window>` |
+| `hide`, `show` | `<window>` — hide until explicitly shown or activated; show also restores its workspace/minimized state |
 | `raise`, `lower` | `<window>` |
 | `pin` | `<window>` — toggles staying above the others |
 | `close` | `<window>` |
@@ -796,16 +819,22 @@ needed.
 
 `text-input-v3` and `input-method-v2` are the two halves of input method
 support, for typing scripts a keyboard has no keys for. Start the input method
-with the session:
+with the session, explicitly authorizing its foreground process. Replace the
+program and option below with your input method's executable and foreground
+option:
 
 ```lua
 exec_once = {
-    { argv = { "fcitx5" } },
+    { argv = { "your-input-method", "foreground-option" },
+      input_method = true, stop_on_exit = true },
 },
 ```
 
-The input method takes the keyboard while composing, so its candidate keys do
-not reach the application underneath. Compositor key bindings still work.
+Only the directly launched process may bind the input-method protocol; a
+daemonized child is not authorized. While the focused application enables
+text input, the input method can grab its keyboard for composing, so candidate
+keys do not reach the application underneath. Locking suspends this forwarding.
+Compositor key bindings still work.
 
 ## Screen sharing
 

@@ -21,6 +21,10 @@ static bool reload_queued;
 static bool started;
 static bool wallpaper_queued;
 static struct wl_event_source *reload_source;
+static struct wl_event_source *screen_reconcile_source;
+static void reconcile(void);
+static void translate_into(int32_t *, int32_t *, uint32_t, uint32_t,
+                           const struct screen *, const struct screen *);
 static pid_t bar_pid;
 static bool bar_restarting;
 
@@ -263,18 +267,16 @@ signal_bar(int sig)
 static void
 spawn_bar(void)
 {
-	/* charabar reads the same file, so it has to be told when the
-	 * compositor was started with -c; it defaults to the same path. */
-	char *argv[] = { (char *)"charabar", (char *)"-c", config_path, NULL };
-	if (!config_path)
-		argv[1] = NULL;
+	/* Values are those accepted by the compositor, independent of later
+	 * edits, environment changes, or random values in the user's Lua. */
+	char *argv[] = { (char *)"charabar", (char *)"--settings",
+	    config.bar.source ? config.bar.source : (char *)"return {}", NULL };
 	bar_pid = chara_spawn_process(argv, true);
 	if (bar_pid < 0)
 		bar_pid = 0;
 }
 
-/* charabar reads the configuration once, when it starts, so a changed bar
- * section only takes effect if it is restarted. */
+/* charabar receives one settings snapshot, so changes require a restart. */
 static void
 update_bar(bool enabled, bool restart)
 {
@@ -331,7 +333,8 @@ reconcile(void)
 	struct client *c;
 
 	wl_list_for_each(c, &wm.clients, link) {
-		struct screen *s = chara_window_screen(c);
+		struct screen *s = (c->fullscreen || c->maximized || c->tiled) && c->scr
+		    ? c->scr : chara_window_screen(c);
 		struct screen *from = c->scr;
 
 		if (!s && !wl_list_empty(&wm.screens))
@@ -341,10 +344,24 @@ reconcile(void)
 
 			chara_forget_focus(c, s);
 			c->scr = s;
+			/* Reconnecting after the final output disappeared can give us a
+			 * different desktop origin or size. Recover all saved placements
+			 * inside the new output, while retaining each orphan's workspace. */
+			if (!from) {
+				translate_into(&c->x, &c->y, c->width, c->height, NULL, s);
+				translate_into(&c->floating.x, &c->floating.y, c->floating.width,
+				               c->floating.height, NULL, s);
+				if (!c->tiled && !c->fullscreen && !c->maximized) {
+					struct swc_rectangle g = {c->x, c->y, c->width, c->height};
+					c->placing = true;
+					swc_window_set_geometry(c->win, &g);
+					c->placing = false;
+				}
+			}
 			/* And to the workspace that monitor is showing, as every other
 			 * monitor move does; keeping the old number leaves the window
 			 * laid out on a workspace that is not on screen. */
-			if (c->ws != s->ws) {
+			if (from && c->ws != s->ws) {
 				c->ws = s->ws;
 				swc_window_set_workspace(c->win, c->ws);
 			}
@@ -352,6 +369,8 @@ reconcile(void)
 			 * it needs one in the new monitor's. */
 			chara_tiling_reseat(c, from, from_ws);
 		}
+		if (c->fullscreen || c->maximized)
+			chara_update_mode_geometry(c);
 	}
 	chara_sync_windows();
 	chara_tiling_dirty_all();
@@ -361,6 +380,7 @@ static void
 on_scr_geometry(void *data)
 {
 	struct screen *s = data;
+	if (!wm.running) return;
 	if (chara_overview_on_screen(s)) chara_overview_cancel();
 
 	/* The bar appearing, or a mode change: every workspace on this monitor
@@ -373,6 +393,7 @@ static void
 on_scr_entered(void *data)
 {
 	struct screen *s = data;
+	if (!wm.running) return;
 	if (chara_overview_on_screen(s)) return;
 
 	wm.scr = s;
@@ -399,8 +420,11 @@ translate_into(int32_t *x, int32_t *y, uint32_t width, uint32_t height,
                const struct screen *from, const struct screen *to)
 {
 	const struct swc_rectangle *area = &to->scr->usable_geometry;
-	int64_t nx = (int64_t)*x - from->x + to->x;
-	int64_t ny = (int64_t)*y - from->y + to->y;
+	int64_t nx = *x, ny = *y;
+	if (from) {
+		nx += (int64_t)to->x - from->x;
+		ny += (int64_t)to->y - from->y;
+	}
 
 	if (nx + width > (int64_t)area->x + area->width)
 		nx = (int64_t)area->x + area->width - width;
@@ -508,6 +532,16 @@ static const struct swc_screen_handler scr_handler = {
 	.entered = on_scr_entered,
 };
 
+static void
+reconcile_screens_idle(void *data)
+{
+	(void)data;
+	screen_reconcile_source = NULL;
+	reconcile();
+	if ((!wm.cur || !wm.cur->visible) && wm.scr)
+		chara_focus(chara_first_on(wm.scr));
+}
+
 void
 chara_new_screen(struct swc_screen *scr)
 {
@@ -538,8 +572,15 @@ chara_new_screen(struct swc_screen *scr)
 	_inf("monitor %s: %dx%d at %d,%d", name ? name : "?", s->width, s->height,
 	     s->x, s->y);
 	/* Plugged in while running. */
-	if (started)
+	if (started) {
 		queue_wallpaper();
+		/* SWC inserts its screen after new_screen returns. Recover clients
+		 * detached while there were no outputs once that insertion is done. */
+		if (!screen_reconcile_source) {
+			screen_reconcile_source = wl_event_loop_add_idle(wm.loop, reconcile_screens_idle, NULL);
+			if (!screen_reconcile_source) reconcile_screens_idle(NULL);
+		}
+	}
 }
 
 /* A desktop shell asked for a workspace on one monitor. */
@@ -556,6 +597,7 @@ static const struct swc_manager manager = {
 	.new_screen = chara_new_screen,
 	.new_window = chara_new_window,
 	.workspace_activate = on_workspace_activate,
+	.authorize_input_method = chara_input_method_authorized,
 };
 
 /* --------------------------------------------------------------- reload */
@@ -628,8 +670,11 @@ reload_now(void *data)
 	chara_tiling_dirty_all();
 
 	struct client *client;
-	wl_list_for_each(client, &wm.clients, link)
+	wl_list_for_each(client, &wm.clients, link) {
+		if (client->maximized || client->fullscreen)
+			chara_update_mode_geometry(client);
 		chara_decorate(client, wm.cur == client);
+	}
 	chara_config_start(&config);
 	_inf("reload: configuration applied");
 	return 0;
@@ -673,6 +718,8 @@ cleanup(void)
 	chara_ipc_finish();
 	if (reload_source)
 		wl_event_source_remove(reload_source);
+	if (screen_reconcile_source)
+		wl_event_source_remove(screen_reconcile_source);
 }
 
 static void
@@ -827,9 +874,12 @@ main(int argc, char **argv)
 	wm.running = false;
 
 	cleanup();
+	/* SWC destroys clients and outputs through our handlers. Their manager
+	 * state, including decorations and binding userdata, must stay alive
+	 * until all those callbacks and SWC's own teardown have finished. */
+	swc_finalize();
 	chara_config_finish(&config);
 	chara_bindings_finish();
-	swc_finalize();
 	wl_display_destroy(wm.dpy);
 	free(config_path);
 	return 0;

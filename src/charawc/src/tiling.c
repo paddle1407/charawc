@@ -19,13 +19,14 @@
  * loop turn. swc coalesces configure events over the same turn, so a burst of
  * a dozen events costs one configure per window rather than a dozen.
  */
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "config.h"
 
-#define MAX_SCREENS 16
+#define MAX_SCREENS 32
 
 static struct wl_event_loop *event_loop;
 static bool arrange_queued;
@@ -56,7 +57,7 @@ struct plan {
 static bool
 laid_out(const struct client *c)
 {
-	return c->tiled && !c->minimized && !c->fullscreen && !c->maximized;
+	return c->tiled && !c->hidden && !c->minimized && !c->fullscreen && !c->maximized;
 }
 
 /*
@@ -418,17 +419,10 @@ chara_tiling_ignore_enter(void)
 static void
 remember_floating(struct client *c)
 {
-	struct swc_rectangle g;
-
-	/* Only a window that is standing on its own has a place worth keeping:
-	 * a tiled one is in a cell, and a fullscreen or maximized one is
-	 * wearing the whole monitor. */
-	if (c->tiled || c->fullscreen || c->maximized)
-		return;
-	if (swc_window_get_geometry(c->win, &g) && g.width && g.height)
-		c->floating = g;
-	else
-		c->floating = (struct swc_rectangle){ c->x, c->y, c->width, c->height };
+	if (c->tiled || c->fullscreen || c->maximized) return;
+	/* The floating callback records actual client sizes; keep the latest
+	 * requested position when a move still awaits a buffer acknowledgement. */
+	c->floating = (struct swc_rectangle){c->x, c->y, c->width, c->height};
 }
 
 static void
@@ -455,7 +449,18 @@ restore_floating(struct client *c)
 	if (c->fullscreen || c->maximized)
 		return;
 	swc_window_set_stacked(c->win);
-	swc_window_set_geometry(c->win, &g);
+	chara_place(c, g);
+}
+
+static bool
+has_tile_room(const struct client *c)
+{
+	unsigned n = 0;
+	struct client *other;
+	wl_list_for_each(other, &wm.clients, link)
+		if (other != c && other->tiled && other->scr == c->scr && other->ws == c->ws &&
+		    ++n >= TILE_MAX_WINDOWS) return false;
+	return true;
 }
 
 void
@@ -463,6 +468,10 @@ chara_tiling_admit(struct client *c)
 {
 	if (!c || c->tiled)
 		return;
+	if (!has_tile_room(c)) {
+		_wrn("tiling: workspace is full; keeping window #%u floating", c->id);
+		return;
+	}
 	remember_floating(c);
 	c->tiled = true;
 	c->tile_mode_set = false;
@@ -500,9 +509,14 @@ chara_tiling_set(struct client *c, bool tiled)
 	if (!c || c->tiled == tiled)
 		return false;
 	if (tiled) {
+		if (!has_tile_room(c)) {
+			_wrn("tiling: workspace is full; keeping window #%u in its current mode", c->id);
+			return false;
+		}
 		/* Maximized is a mode of its own; a window cannot be in two. */
 		chara_set_maximized(c, false);
 		chara_tiling_admit(c);
+		if (!c->tiled) return false;
 	} else {
 		chara_tiling_forget(c);
 		restore_floating(c);
@@ -568,6 +582,16 @@ chara_tiling_reseat(struct client *c, struct screen *from, uint8_t from_ws)
 		renumber(from, from_ws);
 		chara_tiling_dirty(from, from_ws);
 	}
+	if (!has_tile_room(c)) {
+		_wrn("tiling: destination workspace is full; floating window #%u", c->id);
+		/* Migration has already translated, or explicitly replaced, the
+		 * saved rectangle. Restore that destination placement rather than a
+		 * stale floating rectangle which could migrate us back recursively. */
+		c->floating = (struct swc_rectangle){c->x, c->y, c->width, c->height};
+		chara_tiling_forget(c);
+		restore_floating(c);
+		return;
+	}
 	place_in_order(c);
 	chara_tiling_dirty_client(c);
 }
@@ -603,21 +627,8 @@ screen_toward(struct screen *from, enum tile_dir dir)
 static bool
 move_to_screen(struct client *c, struct screen *to)
 {
-	struct screen *from = c->scr;
-	uint8_t from_ws = c->ws;
-
-	if (!to || to == from)
-		return false;
-	chara_forget_focus(c, to);
-	c->scr = to;
-	if (c->ws != to->ws) {
-		c->ws = to->ws;
-		swc_window_set_workspace(c->win, c->ws);
-		chara_sync_windows();
-	}
-	chara_tiling_reseat(c, from, from_ws);
-	if (wm.cur == c)
-		to->focus = c;
+	if (!to || to == c->scr) return false;
+	chara_migrate(c, to, true);
 	return true;
 }
 
@@ -692,51 +703,55 @@ monocle_step(struct screen *s, enum tile_dir dir)
 bool
 chara_focus_dir(enum tile_dir dir)
 {
-	struct client *clients[TILE_MAX_WINDOWS];
-	struct tile_item items[TILE_MAX_WINDOWS];
-	struct screen *s = chara_active_screen(), *to;
+	struct screen *s = wm.cur && wm.cur->visible ? wm.cur->scr : chara_active_screen(), *to;
+	struct client *c, **clients;
+	struct tile_item *items;
+	size_t count = 0;
 	unsigned n;
-	int self, other;
+	int self = -1, other;
+	bool changed = false;
 
-	if (!s)
-		return false;
-	n = gather_showing(s, clients, items, TILE_MAX_WINDOWS);
-	self = -1;
+	if (!s) return false;
+	/* Floating overflow windows still participate in directional focus. */
+	wl_list_for_each(c, &wm.clients, link)
+		if (c->scr == s && c->ws == s->ws && !c->minimized && c->visible)
+			++count;
+	if (count > INT_MAX || count > SIZE_MAX / sizeof(*clients) ||
+	    count > SIZE_MAX / sizeof(*items)) return false;
+	clients = count ? malloc(count * sizeof(*clients)) : NULL;
+	items = count ? malloc(count * sizeof(*items)) : NULL;
+	if (count && (!clients || !items)) goto done;
+	n = gather_showing(s, clients, items, (unsigned)count);
 	for (unsigned i = 0; i < n && self < 0; ++i)
-		if (clients[i] == wm.cur)
-			self = (int)i;
+		if (clients[i] == wm.cur) self = (int)i;
 	if (self < 0) {
-		/* Nothing here has the focus: take it rather than doing nothing. */
 		if (n) {
 			chara_focus(clients[0]);
-			return true;
+			changed = true;
+			goto done;
 		}
 	} else {
 		other = tile_neighbour(items, n, (unsigned)self, dir);
 		if (other >= 0) {
 			chara_focus(clients[other]);
-			return true;
+			changed = true;
+			goto done;
 		}
 	}
-	/* Nothing beside it, which in monocle is always true: step through the
-	 * order there instead of walking off the monitor. */
-	if (monocle_step(s, dir))
-		return true;
-	/* Off the edge of this monitor, so carry on to the next one. */
+	if (monocle_step(s, dir)) { changed = true; goto done; }
 	to = screen_toward(s, dir);
-	if (!to || to == s)
-		return false;
-	{
-		/* The window last used there, as a monitor the pointer walks
-		 * onto would pick. */
+	if (to && to != s) {
 		struct client *arrive = chara_first_on(to);
-
-		if (!arrive)
-			return false;
-		wm.scr = to;
-		chara_focus(arrive);
-		return true;
+		if (arrive) {
+			wm.scr = to;
+			chara_focus(arrive);
+			changed = true;
+		}
 	}
+done:
+	free(clients);
+	free(items);
+	return changed;
 }
 
 bool

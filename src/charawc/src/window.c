@@ -121,12 +121,16 @@ chara_active_ws(void)
 struct screen *
 chara_window_screen(const struct client *c)
 {
-	struct swc_rectangle g;
-	if (!c || !c->win || !swc_window_get_geometry(c->win, &g))
-		return c ? c->scr : NULL;
-
-	struct screen *s = chara_screen_at(g.x + (int32_t)g.width / 2,
-	                                   g.y + (int32_t)g.height / 2);
+	if (!c) return NULL;
+	/* Geometry requests can precede their buffer acknowledgement. Ownership
+	 * follows the requested position, not an old buffer still on screen. */
+	struct swc_rectangle g = {c->x, c->y, c->width, c->height};
+	if (wm.grab.active && wm.grab.client == c)
+		(void)swc_window_get_geometry(c->win, &g);
+	int64_t x = (int64_t)g.x + g.width / 2;
+	int64_t y = (int64_t)g.y + g.height / 2;
+	struct screen *s = x >= INT32_MIN && x <= INT32_MAX &&
+	    y >= INT32_MIN && y <= INT32_MAX ? chara_screen_at((int32_t)x, (int32_t)y) : NULL;
 	return s ? s : c->scr;
 }
 
@@ -160,6 +164,7 @@ chara_focus(struct client *c)
 	    (chara_overview_on_screen(chara_active_screen()) ||
 	     (c && chara_overview_on_screen(c->scr))))
 		return;
+	if (c && (!c->visible || c->hidden || c->minimized)) return;
 	struct client *previous = wm.cur;
 
 	if (c && c->scr)
@@ -187,7 +192,7 @@ chara_focus(struct client *c)
 static bool
 on_workspace(const struct client *c, const struct screen *s)
 {
-	return c && !c->minimized && c->scr == s && c->ws == s->ws;
+	return c && !c->hidden && !c->minimized && c->scr == s && c->ws == s->ws;
 }
 
 struct client *
@@ -216,7 +221,7 @@ chara_sync_windows(void)
 	struct client *c;
 
 	wl_list_for_each(c, &wm.clients, link) {
-		bool visible = c->scr && !c->minimized && c->ws == c->scr->ws;
+		bool visible = c->scr && !c->hidden && !c->minimized && c->ws == c->scr->ws;
 		if (visible == c->visible)
 			continue;
 		c->visible = visible;
@@ -312,49 +317,82 @@ chara_ws_move_to(uint8_t ws, struct client *c)
  * the button is held; the window's stored geometry, the monitor it ended up
  * over, and that monitor's workspace only catch up once it is let go.
  */
+static void
+translate_saved(struct swc_rectangle *g, const struct screen *from,
+                const struct screen *to)
+{
+	const struct swc_rectangle *area = &to->scr->usable_geometry;
+	int64_t x = g->x, y = g->y;
+	if (from) { x += (int64_t)to->x - from->x; y += (int64_t)to->y - from->y; }
+	if (x + g->width > (int64_t)area->x + area->width)
+		x = (int64_t)area->x + area->width - g->width;
+	if (y + g->height > (int64_t)area->y + area->height)
+		y = (int64_t)area->y + area->height - g->height;
+	if (x < area->x) x = area->x;
+	if (y < area->y) y = area->y;
+	g->x = (int32_t)x; g->y = (int32_t)y;
+}
+
+void
+chara_migrate(struct client *c, struct screen *to, bool translate)
+{
+	if (!c || !to || !to->scr || c->scr == to) return;
+	struct screen *from = c->scr;
+	uint8_t from_ws = c->ws;
+	if (translate) {
+		struct swc_rectangle saved = {c->x, c->y, c->width, c->height};
+		translate_saved(&saved, from, to);
+		c->x = saved.x; c->y = saved.y;
+		translate_saved(&c->floating, from, to);
+	}
+	chara_forget_focus(c, to);
+	c->scr = to;
+	c->ws = to->ws;
+	swc_window_set_workspace(c->win, c->ws);
+	chara_tiling_reseat(c, from, from_ws);
+	if (wm.cur == c) to->focus = c;
+	chara_sync_windows();
+}
+
+void
+chara_place(struct client *c, struct swc_rectangle g)
+{
+	c->x = g.x; c->y = g.y; c->width = g.width; c->height = g.height;
+	if (!c->tiled && !c->fullscreen && !c->maximized) c->floating = g;
+	/* Resolve the requested rectangle, even while SWC still awaits its ack. */
+	int64_t x = (int64_t)g.x + g.width / 2;
+	int64_t y = (int64_t)g.y + g.height / 2;
+	struct screen *to = x >= INT32_MIN && x <= INT32_MAX &&
+	    y >= INT32_MIN && y <= INT32_MAX ? chara_screen_at((int32_t)x, (int32_t)y) : NULL;
+	if (to) chara_migrate(c, to, false);
+	c->placing = true;
+	swc_window_set_geometry(c->win, &g);
+	c->placing = false;
+}
+
 void
 chara_window_changed(struct client *c)
 {
 	struct swc_rectangle g;
-	struct screen *s;
+	if (!c) return;
+	if (!c->tiled && !c->fullscreen && !c->maximized &&
+	    swc_window_get_geometry(c->win, &g)) chara_place(c, g);
+}
 
-	if (!c)
-		return;
-	/* A tiled window's geometry belongs to the layout, and writing a drag
-	 * back over it would lose the place it is meant to return to. */
-	if (!c->tiled && swc_window_get_geometry(c->win, &g)) {
-		c->x = g.x;
-		c->y = g.y;
-		c->width = g.width;
-		c->height = g.height;
-		if (!c->fullscreen && !c->maximized)
-			c->floating = g;
+void
+chara_set_hidden(struct client *c, bool hidden)
+{
+	if (!c || c->hidden == hidden) return;
+	c->hidden = hidden;
+	chara_tiling_dirty_client(c);
+	chara_sync_windows();
+	if (hidden) {
+		chara_forget_focus(c, NULL);
+		if (wm.cur == c) chara_focus(c->scr ? chara_first_on(c->scr) : NULL);
+	} else {
+		chara_bring_up(c);
+		if (c->visible) swc_window_raise(c->win);
 	}
-	s = chara_window_screen(c);
-	if (!s || s == c->scr)
-		return;
-	/*
-	 * Dropped on another monitor, so it belongs to that monitor now, and to
-	 * the workspace that monitor is showing. Without the second half, a window
-	 * dragged across keeps the workspace number it had, and the next switch on
-	 * the monitor it came from hides a window sitting in plain sight on this
-	 * one.
-	 */
-	{
-		struct screen *from = c->scr;
-		uint8_t from_ws = c->ws;
-
-		chara_forget_focus(c, s);
-		c->scr = s;
-		if (c->ws != s->ws) {
-			c->ws = s->ws;
-			swc_window_set_workspace(c->win, c->ws);
-			chara_sync_windows();
-		}
-		chara_tiling_reseat(c, from, from_ws);
-	}
-	if (wm.cur == c)
-		s->focus = c;
 }
 
 /* ---------------------------------------------------------- window state */
@@ -425,21 +463,8 @@ chara_set_fullscreen(struct client *c, bool fullscreen, struct swc_screen *on)
 			s = chara_screen_of(on);
 		if (!s)
 			s = c->scr;
-		if (s && s != c->scr) {
-			struct screen *from = c->scr;
-			uint8_t from_ws = c->ws;
-
-			chara_forget_focus(c, s);
-			c->scr = s;
-			/* The monitor it fills is the monitor it belongs to, and to
-			 * the workspace that monitor is showing. Without this it comes
-			 * out of fullscreen onto a workspace that is not on screen. */
-			if (c->ws != s->ws) {
-				c->ws = s->ws;
-				swc_window_set_workspace(c->win, c->ws);
-			}
-			chara_tiling_reseat(c, from, from_ws);
-		}
+		if (s && s != c->scr)
+			chara_migrate(c, s, true);
 		swc_window_set_fullscreen(c->win, c->scr ? c->scr->scr : NULL);
 	} else {
 		/* A client leaving fullscreen goes back to maximized if that is
@@ -514,6 +539,7 @@ chara_restore(struct client *c)
 	if (!c || !c->minimized)
 		return;
 
+	c->hidden = false;
 	c->minimized = 0;
 	swc_window_set_minimized(c->win, false);
 	uint8_t from_ws = c->ws;
@@ -543,6 +569,11 @@ chara_bring_up(struct client *c)
 {
 	if (!c)
 		return;
+	if (c->hidden) {
+		c->hidden = false;
+		chara_tiling_dirty_client(c);
+		chara_sync_windows();
+	}
 	if (c->minimized)
 		chara_restore(c);
 	else if (c->scr && c->ws != c->scr->ws)
@@ -571,6 +602,8 @@ apply_rule(struct client *c)
 	}
 	c->movable = match->movable;
 	c->resizable = match->resizable;
+	swc_window_set_movable(c->win, c->movable);
+	swc_window_set_resizable(c->win, c->resizable);
 	if (match->has_titlebar)
 		c->titlebar = match->titlebar;
 	/*
@@ -608,11 +641,7 @@ apply_rule(struct client *c)
 	c->floating = g;
 	if (c->tiled)
 		return;
-	swc_window_set_geometry(c->win, &g);
-	c->x = g.x;
-	c->y = g.y;
-	c->width = g.width;
-	c->height = g.height;
+	chara_place(c, g);
 }
 
 /* --------------------------------------------------------- swc callbacks */
@@ -665,16 +694,16 @@ on_destroy(void *data)
 		wm.grab.client = NULL;
 	}
 	drag_forget(c);
-	chara_tiling_forget(c);
+	if (wm.running) chara_tiling_forget(c);
 	chara_forget_focus(c, NULL);
 	if (wm.cur == c)
 		wm.cur = NULL;
 
 	wl_list_remove(&c->link);
 	free(c);
-	chara_overview_refresh();
+	if (wm.running) chara_overview_refresh();
 
-	if (had_focus && s)
+	if (wm.running && had_focus && s)
 		chara_focus(chara_first_on(s));
 }
 
@@ -716,6 +745,7 @@ static void
 on_interactive_move(void *data, bool active)
 {
 	struct client *c = data;
+	if (!wm.running) return;
 
 	if (active) {
 		wm.grab = (struct grab){ .active = true, .resize = false, .client = c };
@@ -807,7 +837,19 @@ on_request_resize(void *data)
 	chara_set_maximized(c, false);
 }
 
-static void on_geometry(void *data) { chara_overview_refresh(); }
+static void on_geometry(void *data)
+{
+	struct client *c = data;
+	struct swc_rectangle g;
+	/* A committed client size can differ from the requested size. Keep the
+	 * intended position: SWC may not have flushed a pending move yet. */
+	if (!c->placing && !c->tiled && !c->fullscreen && !c->maximized &&
+	    swc_window_get_geometry(c->win, &g) && g.width && g.height) {
+		c->width = g.width; c->height = g.height;
+		c->floating = (struct swc_rectangle){c->x, c->y, g.width, g.height};
+	}
+	chara_overview_refresh();
+}
 
 static const struct swc_window_handler win_handler = {
 	.geometry_changed = on_geometry,

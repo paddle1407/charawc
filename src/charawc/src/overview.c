@@ -32,7 +32,7 @@ static struct client *by_id(uint32_t id)
 }
 static bool eligible(const struct client *c)
 {
-	return c->scr == overview.screen &&
+	return !c->hidden && c->scr == overview.screen &&
 	    (!config.overview.workspace || c->ws == overview.screen->ws) &&
 	    (config.overview.include_minimized || !c->minimized);
 }

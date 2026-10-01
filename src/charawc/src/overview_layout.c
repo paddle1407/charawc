@@ -59,6 +59,46 @@ static bool pack(const struct entry *e, unsigned n, struct swc_rectangle *out,
 	return true;
 }
 
+/* Large overviews use fixed cells rather than repeated corner searches.
+ * Every item remains selectable, with its source aspect ratio preserved. */
+static double grid_arrange(struct ov_item *items, unsigned n,
+                           struct swc_rectangle area, int inner, int outer,
+                           unsigned footer)
+{
+	int64_t width = (int64_t)area.width - 2LL * outer;
+	int64_t height = (int64_t)area.height - 2LL * outer;
+	if (width < 1 || height <= footer) return 0;
+	uint64_t max_cols = ((uint64_t)width + inner) / (1u + (uint64_t)inner);
+	uint64_t max_rows = ((uint64_t)height + inner) / (1u + (uint64_t)footer + inner);
+	if (!max_cols || !max_rows || max_cols * max_rows < n) return 0;
+	unsigned cols = (unsigned)ceil(sqrt((double)n * (double)width / (double)height));
+	if (!cols) cols = 1;
+	if (cols > n) cols = n;
+	if (cols > max_cols) cols = (unsigned)max_cols;
+	unsigned needed = (unsigned)(((uint64_t)n + max_rows - 1) / max_rows);
+	if (cols < needed) cols = needed;
+	unsigned rows = (unsigned)(((uint64_t)n + cols - 1) / cols);
+	int64_t net_w = width - (int64_t)(cols - 1) * inner;
+	int64_t net_h = height - (int64_t)(rows - 1) * inner;
+	double least_scale = 1;
+	for (unsigned i = 0; i < n; ++i) {
+		if (!items[i].src_width || !items[i].src_height) return 0;
+		unsigned col = i % cols, row = i / cols;
+		int64_t x0 = net_w * col / cols, x1 = net_w * (col + 1) / cols;
+		int64_t y0 = net_h * row / rows, y1 = net_h * (row + 1) / rows;
+		double scale = fmin(1, fmin((double)(x1 - x0) / items[i].src_width,
+		    (double)(y1 - y0 - footer) / items[i].src_height));
+		if (scale <= 0) return 0;
+		uint32_t w = (uint32_t)fmax(1, floor(items[i].src_width * scale));
+		uint32_t h = (uint32_t)fmax(1, floor(items[i].src_height * scale));
+		items[i].rect = (struct swc_rectangle){
+		    (int32_t)((int64_t)area.x + outer + x0 + (int64_t)col * inner + (x1 - x0 - w) / 2),
+		    (int32_t)((int64_t)area.y + outer + y0 + (int64_t)row * inner + (y1 - y0 - h - footer) / 2), w, h};
+		if (scale < least_scale) least_scale = scale;
+	}
+	return least_scale;
+}
+
 double ov_arrange(struct ov_item *items, unsigned n, struct swc_rectangle area,
                   int32_t inner, int32_t outer, uint32_t footer)
 {
@@ -70,6 +110,7 @@ double ov_arrange(struct ov_item *items, unsigned n, struct swc_rectangle area,
 	if (width < 1 || height <= footer ||
 	    (int64_t)area.x + area.width > INT_MAX ||
 	    (int64_t)area.y + area.height > INT_MAX) return 0;
+	if (n > 64) return grid_arrange(items, n, area, inner, outer, footer);
 	struct entry *e = calloc(n, sizeof(*e));
 	/* Two buffers: `out` always holds the packing for `low`, the best scale
 	 * known to fit, and trials go into the other, so the answer never has to

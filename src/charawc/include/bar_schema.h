@@ -1,23 +1,13 @@
 #ifndef CHARA_BAR_SCHEMA_H
 #define CHARA_BAR_SCHEMA_H
 
-/*
- * The bounds and option lists for the [bar] config table, shared between
- * charaWC (src/config.c), which validates the whole file and only launches
- * charabar once it passes, and charabar (src/charabar/charabar.c), which
- * re-reads and re-parses the same table itself after every reload. Before
- * this header existed both sides carried their own copy of every range and
- * option list, with nothing to stop them drifting apart: a range charaWC
- * accepted that charabar silently clamped, or the reverse, a config charaWC
- * rejected before charabar ever saw the key.
- *
- * charaWC still keeps only bar.enabled and hashes the rest (see
- * BAR_DIGEST_* in config.c) rather than handing charabar the parsed values:
- * charabar reads config.lua itself, deliberately, so a config that hangs or
- * over-allocates degrades the bar rather than the compositor. Sharing this
- * header is what keeps the two readers agreeing on what a valid value is
- * without also sharing that reader.
- */
+/* Shared limits for validated bar settings and their wire snapshot. */
+#define BAR_FONT_SIZE 128
+#define BAR_WORKSPACE_FORMAT_SIZE 64
+#define BAR_WINDOW_EMPTY_SIZE 128
+#define BAR_CLOCK_FORMAT_SIZE 128
+#define BAR_MODULE_FORMAT_SIZE 64
+#define BAR_MAX_OUTPUTS 32
 
 #define BAR_HEIGHT_MIN 16
 #define BAR_HEIGHT_MAX 128

@@ -25,7 +25,7 @@ struct startup_command {
 	struct wl_list link;
 	char **argv;
 	char *ready_socket;
-	bool wait, stop_on_exit;
+	bool wait, stop_on_exit, input_method;
 	int timeout_ms;
 };
 
@@ -67,10 +67,10 @@ struct tiling_config {
 
 struct bar_config {
 	bool enabled;
-	/* Digest of the whole bar table. charabar reads config.lua only when it
-	 * starts, so charaWC restarts it whenever this changes -- including for
-	 * the settings charaWC merely validates and never keeps. */
+	/* Digest of the whole bar table. Restart charabar when the validated
+	 * snapshot changes, including settings only the bar interprets. */
 	uint64_t digest;
+	char *source; /* literal Lua snapshot of the validated bar table */
 };
 
 struct overview_config {
@@ -132,6 +132,7 @@ bool chara_startup_init(struct wl_event_loop *);
 void chara_startup_finish(void);
 void chara_startup_run(struct config *);
 void chara_child_exited(pid_t);
+bool chara_input_method_authorized(pid_t);
 
 /* tiling.c -- the glue between the layout engine and the compositor. The
  * geometry itself is in tiling.h, and is pure. */
@@ -215,6 +216,9 @@ bool chara_set_maximized(struct client *, bool);
 bool chara_set_pinned(struct client *, bool);
 void chara_update_mode_geometry(struct client *);
 void chara_window_changed(struct client *); /* after an interactive drag */
+void chara_place(struct client *, struct swc_rectangle);
+void chara_migrate(struct client *, struct screen *, bool translate_saved);
+void chara_set_hidden(struct client *, bool);
 struct screen *chara_window_screen(const struct client *);
 struct screen *chara_active_screen(void);
 uint8_t chara_active_ws(void);

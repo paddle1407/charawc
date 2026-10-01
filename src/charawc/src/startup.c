@@ -192,6 +192,16 @@ chara_startup_init(struct wl_event_loop *loop)
 	return true;
 }
 
+bool
+chara_input_method_authorized(pid_t pid)
+{
+	if (!initialized || stopping || pid <= 0) return false;
+	struct process *p;
+	wl_list_for_each(p, &processes, link)
+		if (p->pid == pid && p->command->input_method) return true;
+	return false;
+}
+
 void
 chara_startup_run(struct config *cfg)
 {

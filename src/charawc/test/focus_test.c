@@ -75,6 +75,8 @@ void swc_window_set_pinned(struct swc_window *w, bool p)
 { unsigned i = window_index(w); if (i < 4) pinned_state[i] = p; }
 void swc_window_set_minimized(struct swc_window *w, bool m) {}
 void swc_window_set_workspace(struct swc_window *w, uint32_t ws) {}
+void swc_window_set_movable(struct swc_window *w, bool movable) {}
+void swc_window_set_resizable(struct swc_window *w, bool resizable) {}
 void swc_workspace_set_active(struct swc_screen *s, uint32_t ws) {}
 void swc_window_show(struct swc_window *w) {}
 void swc_window_show_in_place(struct swc_window *w) {}

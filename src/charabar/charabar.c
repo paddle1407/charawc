@@ -31,9 +31,9 @@
 
 #define MAX_MODULES 16
 #define MAX_HITS 128
-#define MAX_WORKSPACES 64
-#define MAX_WORKSPACE_GROUPS 8
-#define MAX_GROUP_OUTPUTS 8
+#define MAX_WORKSPACE_GROUPS BAR_MAX_OUTPUTS
+#define MAX_WORKSPACES (MAX_WORKSPACE_GROUPS * BAR_WORKSPACES_COUNT_MAX)
+#define MAX_GROUP_OUTPUTS BAR_MAX_OUTPUTS
 #define TEXT_SIZE 512
 
 /* Which of the compositor's windows a taskbar lists. */
@@ -66,17 +66,17 @@ struct bar_config {
 	bool top, top_layer, exclusive;
 	uint32_t height, padding, spacing;
 	uint32_t background, foreground, accent, muted;
-	char font[128];
+	char font[BAR_FONT_SIZE];
 	enum module_type modules[3][MAX_MODULES];
 	unsigned module_count[3];
 	unsigned workspace_count, window_max, taskbar_max;
 	enum taskbar_scope taskbar_scope;
 	enum taskbar_overflow taskbar_overflow;
 	unsigned taskbar_min_width, taskbar_max_width, taskbar_scroll_step;
-	char workspace_format[64], window_empty[128];
-	char clock_format[128], cpu_format[64], memory_format[64];
-	char network_online[64], network_offline[64];
-	char volume_format[64], volume_muted[64];
+	char workspace_format[BAR_WORKSPACE_FORMAT_SIZE], window_empty[BAR_WINDOW_EMPTY_SIZE];
+	char clock_format[BAR_CLOCK_FORMAT_SIZE], cpu_format[BAR_MODULE_FORMAT_SIZE], memory_format[BAR_MODULE_FORMAT_SIZE];
+	char network_online[BAR_MODULE_FORMAT_SIZE], network_offline[BAR_MODULE_FORMAT_SIZE];
+	char volume_format[BAR_MODULE_FORMAT_SIZE], volume_muted[BAR_MODULE_FORMAT_SIZE];
 	unsigned clock_interval, cpu_interval, memory_interval, network_interval;
 	unsigned volume_interval;
 	/* Whether the config named a clock interval, as opposed to the default
@@ -233,6 +233,7 @@ struct app {
 };
 
 static struct app app;
+static bool config_invalid;
 
 static void config_defaults(struct bar_config *config)
 {
@@ -317,8 +318,14 @@ static void lua_string_field(lua_State *L, int index, const char *name,
 {
 	if (!lua_field(L, index, name))
 		return;
-	if (lua_type(L, -1) == LUA_TSTRING)
-		snprintf(out, size, "%s", lua_tostring(L, -1));
+	if (lua_type(L, -1) == LUA_TSTRING) {
+		size_t length;
+		const char *text = lua_tolstring(L, -1, &length);
+		if (length >= size || memchr(text, '\0', length) || !g_utf8_validate(text, (gssize)length, NULL)) {
+			fprintf(stderr, "charabar: %s must be UTF-8 and at most %zu bytes\n", name, size - 1);
+			config_invalid = true;
+		} else memcpy(out, text, length + 1);
+	}
 	lua_pop(L, 1);
 }
 
@@ -425,10 +432,8 @@ static bool parse_timed(lua_State *L, int bar, const char *name, char *format,
 }
 
 /*
- * charaWC parses this same file first and only launches the bar once it passes,
- * but the bar must not be the weaker of the two readers: it reads the file
- * again, by itself, after a reload, and a config that loops or allocates
- * without bound would hang or exhaust the bar rather than the compositor.
+ * Managed bars receive a literal settings snapshot. Standalone -c still
+ * evaluates the user file, so parsing must bound allocation and execution.
  * These limits mirror charaWC's config.c.
  */
 struct lua_budget {
@@ -513,9 +518,10 @@ static char *config_snapshot(const char *path, size_t *length)
 	return source;
 }
 
-static bool config_load(const char *path, struct bar_config *config)
+static bool config_load(const char *path, const char *settings, struct bar_config *config)
 {
 	static struct lua_budget budget;
+	config_invalid = false;
 	budget = (struct lua_budget){0};
 	clock_gettime(CLOCK_MONOTONIC, &budget.start);
 	lua_State *L = lua_newstate(config_alloc, &budget);
@@ -539,12 +545,13 @@ static bool config_load(const char *path, struct bar_config *config)
 	lua_setfield(L, -2, "getenv");
 	lua_setglobal(L, "os");
 	size_t length = 0;
-	char *source = config_snapshot(path, &length);
+	char *source = settings ? strdup(settings) : config_snapshot(path, &length);
+	if (settings) length = strlen(settings);
 	if (!source) {
 		lua_close(L);
 		return false;
 	}
-	int loaded = luaL_loadbufferx(L, source, length, path, "t");
+	int loaded = luaL_loadbufferx(L, source, length, settings ? "bar settings" : path, "t");
 	free(source);
 	if (loaded != LUA_OK || lua_pcall(L, 0, 1, 0) != LUA_OK) {
 		fprintf(stderr, "charabar: %s\n", lua_tostring(L, -1));
@@ -672,7 +679,7 @@ static bool config_load(const char *path, struct bar_config *config)
 		lua_pop(L, 1);
 	}
 	lua_close(L);
-	return true;
+	return !config_invalid;
 }
 
 static void draw_output(struct output *output);
@@ -2112,6 +2119,9 @@ static void workspace_manager_finished(void *data,
 	}
 	ext_workspace_manager_v1_destroy(manager);
 	app.workspace_manager = NULL;
+	memset(app.workspaces, 0, sizeof(app.workspaces));
+	memset(app.wsgroups, 0, sizeof(app.wsgroups));
+	app.workspace_count = app.wsgroup_count = 0;
 	draw_all();
 }
 
@@ -2756,23 +2766,25 @@ static char *default_config_path(void)
 
 int main(int argc, char **argv)
 {
-	const char *config_path = NULL;
+	const char *config_path = NULL, *settings = NULL;
 	char *owned_path = NULL;
 	if (argc == 3 && !strcmp(argv[1], "-c"))
 		config_path = argv[2];
+	else if (argc == 3 && !strcmp(argv[1], "--settings"))
+		settings = argv[2];
 	else if (argc != 1) {
-		fprintf(stderr, "Usage: charabar [-c config.lua]\n");
+		fprintf(stderr, "Usage: charabar [-c config.lua | --settings snapshot]\n");
 		return 2;
 	}
 	app.volume_fd = -1;
 	app.volume_pid = -1;
 	config_defaults(&app.config);
-	if (!config_path) {
+	if (!config_path && !settings) {
 		owned_path = default_config_path();
 		config_path = owned_path;
 	}
-	if (config_path && access(config_path, R_OK) == 0 &&
-	    !config_load(config_path, &app.config)) {
+	if ((settings || (config_path && access(config_path, R_OK) == 0)) &&
+	    !config_load(config_path, settings, &app.config)) {
 		free(owned_path);
 		return 1;
 	}
