@@ -17,6 +17,19 @@ A small Wayland compositor for Linux, built on
 
 Configuration is documented in [CONFIG.md](CONFIG.md).
 
+## Development checks
+
+`./check.sh` explicitly runs the desktop build, charawc configuration and
+layout tests, neuwld DRM dispatch checks, and neuswc rendering/input/protocol
+checks. It also compiles the CPU-only drawing library and the framebuffer
+compositor configuration. `./build.sh` compiles without running tests.
+
+The library tests are registered with Meson and can be run independently
+with `meson test -C src/neuwld/build --print-errorlogs` or
+`meson test -C src/neuswc/build --print-errorlogs` after configuring their
+build directories. The GitHub workflow runs the complete checks for pushes
+and pull requests.
+
 ## Dependencies
 
 Build tools: a C11 compiler, `make`, `meson`, `ninja`, `pkg-config`,

@@ -1,6 +1,7 @@
 # Local builds and scratch files
 /prefix/
 /temp/
+/.ci-tools/
 /src/charabar/build/
 
 # Executables and build stamps

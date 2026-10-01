@@ -25,6 +25,7 @@
 #include <wayland-client.h>
 
 #include "bar_schema.h"
+#include "config_lua.h"
 #include "layer-shell.h"
 #include "toplevel.h"
 #include "workspace.h"
@@ -432,43 +433,6 @@ static bool parse_timed(lua_State *L, int bar, const char *name, char *format,
 }
 
 /*
- * Managed bars receive a literal settings snapshot. Standalone -c still
- * evaluates the user file, so parsing must bound allocation and execution.
- * These limits mirror charaWC's config.c.
- */
-struct lua_budget {
-	size_t bytes;
-	unsigned instructions;
-	struct timespec start;
-};
-
-static void *config_alloc(void *data, void *ptr, size_t old_size, size_t size)
-{
-	struct lua_budget *budget = data;
-	if (!ptr) old_size = 0; /* Lua passes a type tag here for new objects. */
-	if (!size) { free(ptr); budget->bytes -= old_size; return NULL; }
-	if (size > 64 * 1024 * 1024 - (budget->bytes - old_size)) return NULL;
-	void *next = realloc(ptr, size);
-	if (next) budget->bytes = budget->bytes - old_size + size;
-	return next;
-}
-
-static void config_instruction_hook(lua_State *L, lua_Debug *ar)
-{
-	void *data;
-	struct timespec now;
-	(void)ar;
-	lua_getallocf(L, &data);
-	struct lua_budget *budget = data;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	int64_t elapsed = (now.tv_sec - budget->start.tv_sec) * INT64_C(1000000000) +
-	                  now.tv_nsec - budget->start.tv_nsec;
-	budget->instructions += 1000;
-	if (budget->instructions >= 1000000 || elapsed > 250000000)
-		luaL_error(L, "configuration exceeded its execution limit");
-}
-
-/*
  * Read the file the way charawc does rather than letting Lua open it: a FIFO
  * or a device would block the bar forever with no timeout, a file being
  * written would parse half a configuration, and loadfile would also accept
@@ -520,14 +484,13 @@ static char *config_snapshot(const char *path, size_t *length)
 
 static bool config_load(const char *path, const char *settings, struct bar_config *config)
 {
-	static struct lua_budget budget;
+	struct config_lua_budget budget = {0};
 	config_invalid = false;
-	budget = (struct lua_budget){0};
 	clock_gettime(CLOCK_MONOTONIC, &budget.start);
-	lua_State *L = lua_newstate(config_alloc, &budget);
+	lua_State *L = lua_newstate(config_lua_alloc, &budget);
 	if (!L)
 		return false;
-	lua_sethook(L, config_instruction_hook, LUA_MASKCOUNT, 1000);
+	lua_sethook(L, config_lua_hook, LUA_MASKCOUNT, 1000);
 	const struct { const char *name; lua_CFunction open; } libs[] = {
 		{ "_G", luaopen_base }, { "table", luaopen_table },
 		{ "string", luaopen_string }, { "math", luaopen_math },
@@ -536,6 +499,7 @@ static bool config_load(const char *path, const char *settings, struct bar_confi
 		luaL_requiref(L, libs[i].name, libs[i].open, 1);
 		lua_pop(L, 1);
 	}
+	config_lua_protect_calls(L);
 	/* No arbitrary chunk loading and no package loader, as in charawc. */
 	lua_pushnil(L); lua_setglobal(L, "dofile");
 	lua_pushnil(L); lua_setglobal(L, "loadfile");

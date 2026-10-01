@@ -5,7 +5,9 @@
 
 /* Pure geometry: no compositor calls or global state. Input order is retained;
  * area sorting uses id to break ties. rect is the image; footer pixels below
- * it are reserved for a label. All images use the returned common scale. */
+ * it are reserved for a label. Up to 64 images share the returned scale and
+ * their packing is independent of input order. Larger overviews use cells in
+ * input order with individual scales; the return value is the smallest. */
 struct ov_item {
 	uint32_t id, src_width, src_height;
 	struct swc_rectangle rect;

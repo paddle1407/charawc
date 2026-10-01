@@ -24,12 +24,12 @@ CFLAGS += -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Wshadow -Wpedantic
 CPPFLAGS += -I$(BUILD) -I../charawc/include $(shell $(PKG_CONFIG) --cflags wayland-client cairo pangocairo $(LUA_PKG))
 LDLIBS += $(shell $(PKG_CONFIG) --libs wayland-client cairo pangocairo $(LUA_PKG))
 
-BAR_SCHEMA := ../charawc/include/bar_schema.h
+CONFIG_HEADERS := ../charawc/include/bar_schema.h ../charawc/include/config_lua.h
 
 .PHONY: all clean
 all: charabar
 
-charabar: charabar.c $(GEN_HEADERS) $(GEN_CODE) $(BAR_SCHEMA)
+charabar: charabar.c $(GEN_HEADERS) $(GEN_CODE) $(CONFIG_HEADERS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ charabar.c $(GEN_CODE) $(LDLIBS)
 
 $(BUILD):

@@ -1,0 +1,33 @@
+name: Build and regression checks
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build pkg-config python3-venv \
+            wayland-protocols libwayland-dev libpixman-1-dev libxkbcommon-dev \
+            libdrm-dev libinput-dev libudev-dev libgbm-dev libegl1-mesa-dev \
+            libgles2-mesa-dev libxcursor-dev libfontconfig-dev libfreetype-dev \
+            libcairo2-dev libpango1.0-dev liblua5.4-dev zlib1g-dev
+          python3 -m venv .ci-tools
+          .ci-tools/bin/pip install 'meson>=1.8.0'
+      - name: Install the protocol XML required by this stack
+        run: |
+          curl --fail --location \
+            https://gitlab.freedesktop.org/wayland/wayland-protocols/-/archive/1.49/wayland-protocols-1.49.tar.gz \
+            --output "$RUNNER_TEMP/wayland-protocols.tar.gz"
+          tar -xzf "$RUNNER_TEMP/wayland-protocols.tar.gz" -C "$RUNNER_TEMP"
+          .ci-tools/bin/meson setup "$RUNNER_TEMP/protocol-build" \
+            "$RUNNER_TEMP/wayland-protocols-1.49" --prefix="$PWD/.ci-tools/protocols" -Dtests=false
+          .ci-tools/bin/meson install -C "$RUNNER_TEMP/protocol-build"
+      - name: Check desktop and alternative backends
+        run: |
+          export PATH="$PWD/.ci-tools/bin:$PATH"
+          export PKG_CONFIG_PATH="$PWD/.ci-tools/protocols/share/pkgconfig"
+          ./check.sh

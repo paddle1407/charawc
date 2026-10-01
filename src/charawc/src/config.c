@@ -16,6 +16,7 @@
 
 #include "bar_schema.h"
 #include "config.h"
+#include "config_lua.h"
 
 #if LUA_VERSION_NUM < 502
 #error charawc requires Lua 5.2 or newer
@@ -1187,6 +1188,7 @@ parse(lua_State *L)
 		luaL_requiref(L, libs[i].name, libs[i].open, 1);
 		lua_pop(L, 1);
 	}
+	config_lua_protect_calls(L);
 	/* A declarative config may read the environment. Programs are launched
 	 * from exec/exec_once, never during parsing: no io, loader or execute. */
 	lua_pushnil(L); lua_setglobal(L, "dofile");
@@ -1310,49 +1312,6 @@ chara_config_init(struct config *cfg)
 	return true;
 }
 
-struct lua_budget {
-	size_t bytes;
-	unsigned instructions;
-	struct timespec start;
-};
-
-static void *
-config_alloc(void *data, void *ptr, size_t old_size, size_t size)
-{
-	struct lua_budget *budget = data;
-
-	if (!ptr)
-		old_size = 0; /* Lua uses old_size as a type tag for new objects. */
-	if (!size) {
-		free(ptr);
-		budget->bytes -= old_size;
-		return NULL;
-	}
-	if (size > 64 * 1024 * 1024 - (budget->bytes - old_size))
-		return NULL;
-	void *next = realloc(ptr, size);
-	if (next)
-		budget->bytes = budget->bytes - old_size + size;
-	return next;
-}
-
-static void
-instruction_hook(lua_State *L, lua_Debug *ar)
-{
-	(void)ar;
-	void *data;
-	lua_getallocf(L, &data);
-	struct lua_budget *budget = data;
-	struct timespec now;
-
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	int64_t elapsed = (now.tv_sec - budget->start.tv_sec) * INT64_C(1000000000) +
-	                  now.tv_nsec - budget->start.tv_nsec;
-	budget->instructions += 1000;
-	if (budget->instructions >= 1000000 || elapsed > 250000000)
-		luaL_error(L, "configuration exceeded its execution limit");
-}
-
 bool
 chara_config_load(struct config *cfg, const char *path)
 {
@@ -1398,15 +1357,15 @@ chara_config_load(struct config *cfg, const char *path)
 		return false;
 	}
 
-	struct lua_budget budget = {0};
+	struct config_lua_budget budget = {0};
 	clock_gettime(CLOCK_MONOTONIC, &budget.start);
-	lua_State *L = lua_newstate(config_alloc, &budget);
+	lua_State *L = lua_newstate(config_lua_alloc, &budget);
 	if (!L) {
 		free(source);
 		_wrn("%s: couldn't create a Lua state", path);
 		return false;
 	}
-	lua_sethook(L, instruction_hook, LUA_MASKCOUNT, 1000);
+	lua_sethook(L, config_lua_hook, LUA_MASKCOUNT, 1000);
 	lua_pushcfunction(L, traceback);
 	lua_pushcfunction(L, parse);
 	lua_pushlightuserdata(L, cfg);

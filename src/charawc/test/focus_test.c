@@ -152,6 +152,7 @@ check(const char *what, bool ok)
 static void
 setup(void)
 {
+	wm.running = true;
 	wl_list_init(&wm.clients);
 	wl_list_init(&wm.screens);
 	wm.cur = NULL;

@@ -69,7 +69,7 @@ charactl: src/charactl.c Makefile .build-config
 
 # The unit tests link the real window manager sources against stubs, so they
 # run without a compositor, a session or a graphics card.
-TESTS = test/focus_test test/tiling_test test/overview_test
+TESTS = test/focus_test test/tiling_test test/overview_test test/config_lua_test
 test: $(TESTS)
 	@for t in $(TESTS); do echo "== $$t"; $$t || exit 1; done
 
@@ -87,6 +87,10 @@ test/tiling_test: test/tiling_test.c src/tiling_layout.c include/tiling.h Makefi
 
 test/overview_test: test/overview_test.c src/overview_layout.c include/overview.h Makefile
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o $@ test/overview_test.c src/overview_layout.c -lm
+
+test/config_lua_test: test/config_lua_test.c include/config_lua.h Makefile
+	$(CC) $(CFLAGS) -Iinclude $(shell $(PKG_CONFIG) --cflags $(LUA_PKG)) \
+	  $(LDFLAGS) -o $@ test/config_lua_test.c $(shell $(PKG_CONFIG) --libs $(LUA_PKG))
 
 clean:
 	rm -f charawc charactl .png-* .build-config .build-config.next $(TESTS)
