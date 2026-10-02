@@ -21,7 +21,7 @@ configure() {
 	fi
 }
 configure temp/check/neuwld-cpu src/neuwld \
-    -Ddrm=disabled -Dwayland=disabled -Ddoxygen=disabled
+    -Ddrm=disabled -Dwayland=disabled -Ddoxygen=disabled -Dc_std=c23,c2x
 meson compile -C temp/check/neuwld-cpu
 configure temp/check/neuswc-fb src/neuswc -Dvideo=fb -Dxwayland=disabled
 meson compile -C temp/check/neuswc-fb

@@ -42,10 +42,12 @@ done
 step() { printf '\n==> %s\n' "$1"; }
 
 meson_configure() {
+	# Keep libraries and pkg-config files in the paths used by the build,
+	# runtime linker and installer, including on multiarch distributions.
 	if [ -d build ]; then
-		meson setup --reconfigure build --prefix="$PREFIX" --buildtype=release "$@" >/dev/null
+		meson setup --reconfigure build --prefix="$PREFIX" --libdir=lib --buildtype=release "$@"
 	else
-		meson setup build --prefix="$PREFIX" --buildtype=release "$@" >/dev/null
+		meson setup build --prefix="$PREFIX" --libdir=lib --buildtype=release "$@"
 	fi
 }
 
@@ -56,7 +58,7 @@ bundled)
 	step libspng
 	cd "$SRC/libspng"
 	meson_configure
-	meson install -C build >/dev/null
+	meson install -C build
 	;;
 esac
 
@@ -64,13 +66,14 @@ step neuwld
 cd "$SRC/neuwld"
 # GPU composition is required here, not an optional auto-detected extra:
 # fail the build on missing dependencies instead of silently dropping GBM.
-meson_configure -Ddrm=enabled -Ddrivers=auto,gbm
-meson install -C build >/dev/null
+# Older compilers expose their C23 support under the draft standard name.
+meson_configure -Ddrm=enabled -Ddrivers=auto,gbm -Dc_std=c23,c2x
+meson install -C build
 
 step neuswc
 cd "$SRC/neuswc"
 meson_configure
-meson install -C build >/dev/null
+meson install -C build
 
 step charawc
 cd "$SRC/charawc"
@@ -78,11 +81,11 @@ cd "$SRC/charawc"
 # installed binary and the session stops depending on this checkout staying
 # where it is. Nothing sits there in the build tree, so it falls through.
 make PNG="$PNG" EXTRA_CPPFLAGS="-I$PREFIX/include" \
-     EXTRA_LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/lib' -Wl,-rpath,$PREFIX/lib" >/dev/null
+     EXTRA_LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/lib' -Wl,-rpath,$PREFIX/lib"
 
 step charabar
 cd "$SRC/charabar"
-make >/dev/null
+make
 
 printf '\nbuilt:\n'
 printf '  %s\n' "$SRC/charawc/charawc" "$SRC/charawc/charactl" \
