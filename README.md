@@ -11,6 +11,10 @@ A small Wayland compositor for Linux, built on
 - One Lua configuration file, reloaded in place with Super+Shift+R.
 - `charactl`, a control client that drives the running session from the shell.
 - `charabar`, a status bar configured through the same configuration file.
+- Monitors can be plugged in and out while running, and listed, turned on or
+  off, moved or switched to another mode with `wlr-randr` or `kanshi`
+  (wlr-output-management). Running `wlr-randr` also looks for monitors again,
+  in case one was plugged in without the kernel saying so.
 - Screen locking, idle notification, clipboard and primary selection,
   drag and drop, themed cursor shapes, window activation and input methods,
   so ordinary desktop programs work.
